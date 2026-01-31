@@ -21,6 +21,17 @@ This document defines the rules that must always hold true, regardless of implem
 - Undo/redo operates on bundles, not individual ops
 - Jobs produce exactly one bundle per execution
 
+### Bulk Operations
+
+Bulk operations are collections of changes applied atomically as a single bundle.
+
+- Bulk operations are represented as bundles
+- Bulk operations must be previewable before commit
+- Bulk operations may be staged in overlays for review
+- Bulk operations must be atomic when committed
+- Bulk operations may be proposed instead of directly committed
+- Bulk operation preview shows all affected entities and fields
+
 ### Open
 
 - Compression format
@@ -77,6 +88,42 @@ This document defines the rules that must always hold true, regardless of implem
 - Caching strategies
 - Partial materialization
 - In-memory vs disk
+
+---
+
+## Staging Overlays
+
+Staging overlays are temporary, non-canonical layers of operations that enable safe experimentation and preview.
+
+### Core Semantics
+
+- Overlays are isolated from canonical state
+- Overlay operations do not affect canonical history until explicitly committed
+- Projection, queries, conflicts, and proposals operate identically within overlays
+- Overlays may be discarded without affecting canonical state or history
+- Committing an overlay produces explicit operations added to canonical history
+- Commit is atomic: overlay either fully commits or fully fails
+
+### Overlay Behavior
+
+- Overlays behave like canonical state for all read operations
+- Parameterized queries may reference overlay state as input
+- Overlays support conflict detection against canonical state
+- Multiple overlays may exist simultaneously (per-user, per-task)
+- Overlays do not sync between peers until committed
+
+### Use Cases
+
+- Safe experimentation and what-if scenarios
+- Preview of bulk operations, transforms, or imports
+- Staged data entry (enter data, then commit)
+- Draft workflows before committing changes
+
+### Open
+
+- Overlay persistence across sessions
+- Overlay sharing between peers (draft collaboration)
+- Overlay merge strategies when canonical state changes
 
 ---
 
@@ -353,6 +400,14 @@ These three layers are distinct and independently created.
 - A Concept entity with a single bound plugin entity remains valid
 - A Concept entity with zero bound plugin entities remains valid until explicitly deleted
 
+### Deletion of Concept Entities
+
+- Concept entities with zero bindings remain valid until explicitly deleted
+- Deleting a Concept entity is an explicit, authorized operation
+- Deleting a Concept entity does not rewrite or erase history
+- Historical references to deleted Concept entities remain resolvable for audit
+- Deletion produces an explicit operation recorded in history
+
 ### Post-Unbinding Behavior
 
 - Edits to unbound plugin entities are plugin-local only
@@ -405,6 +460,25 @@ These three layers are distinct and independently created.
 - Projection is semantic, not mechanical copying
 - Projection does not duplicate state; it enforces consistency of meaning
 - Projection never overwrites data silently; all changes are represented by operations
+
+### Local Field Overrides
+
+Local field overrides allow plugins to maintain controlled divergence from canonical values while preserving auditability.
+
+- Canonical fields define shared semantic truth
+- Plugins may declare specific fields as supporting local overrides
+- Local overrides must not modify canonical Concept fields
+- Local overrides are explicitly marked and distinguishable from canonical values
+- Overrides are auditable and recorded as operations
+- Removing an override restores canonical projection
+- Override presence is visible to the user (e.g., "showing local nickname" indicator)
+- Local overrides do not participate in conflict detection unless explicitly promoted
+- Promoting an override to canonical emits a normal edit operation and enters standard conflict semantics
+
+Use cases:
+- Nicknames or local labels for entities
+- Temporary display preferences
+- User-specific annotations that should not sync to canonical state
 
 ### Facet Attachment vs Entity Equivalence
 
@@ -475,6 +549,77 @@ These three layers are distinct and independently created.
 
 - Advanced schema UX for non-technical users
 - Concept definition versioning and migration
+
+---
+
+## Transform Bindings
+
+Transform Bindings are explicit, deterministic semantic rules that produce canonical state changes from other canonical state.
+
+**Anchor:** Transform Bindings automate *how* truth is kept consistent, not *what* truth is.
+
+### Core Definition
+
+- Transform Bindings are explicit semantic rules declared by user action
+- Transform Bindings read canonical state and emit explicit operations
+- Transform Bindings are neither calculations nor projections
+
+### Determinism & Replay
+
+- Transform Bindings must be deterministic functions of canonical state
+- Given identical canonical state, Transform Bindings must produce identical outputs
+- Transform Bindings must be replayable from history without external context
+
+### Execution Semantics
+
+- Transform Bindings execute automatically when their declared source fields change
+- Transform Bindings must not self-trigger or create execution cycles
+- Transform Bindings execute at most once per triggering state change
+
+### Mutation Rules
+
+- Transform Bindings emit normal canonical operations
+- All Transform Binding outputs must be represented as explicit operations
+- Transform Binding outputs must be attributable and auditable
+- Transform Bindings must not silently overwrite canonical state
+- Transform Bindings do not suppress or merge concurrent outputs
+
+### Conflict Interaction
+
+- Transform Binding outputs are subject to normal conflict detection
+- If concurrent transform outputs differ, a conflict is created
+- Transform Bindings must not automatically resolve conflicts
+- Transform Bindings must not overwrite unresolved conflicting fields
+
+### Authority & Permissions
+
+- Transform Binding execution is subject to authorization rules
+- Executing a Transform Binding requires permission to write all affected fields
+- Transform Bindings may be disabled or removed explicitly
+
+### Safety & Transparency
+
+- Transform Bindings must record causal metadata indicating they produced an operation
+- Transform Bindings must be visible in history and audit views
+- Users must be able to trace which Transform Binding produced which changes
+
+### Explicit Non-Goals
+
+- Transform Bindings must not infer user intent
+- Transform Bindings must not merge entities
+- Transform Bindings must not create Concept entities
+
+### Lifecycle Changes
+
+- Disabling a Transform Binding does not revert previously emitted operations
+- Re-enabling a Transform Binding may emit new operations based on current canonical state
+- Transform Binding lifecycle changes are explicit, auditable operations
+
+### Open
+
+- Transform Binding dependency ordering
+- Transform Binding versioning and migration
+- Transform Binding testing/simulation tools
 
 ---
 
@@ -650,12 +795,113 @@ These three layers are distinct and independently created.
 
 ---
 
+## Proposals & Suggestions
+
+Proposals are non-authoritative suggested changes that are visible to collaborators but do not alter canonical state until explicitly accepted. They are distinct from conflicts (which arise from concurrent edits) and from transforms (which are deterministic operations).
+
+### Core Semantics
+
+- Proposals do not modify canonical state
+- Proposals are derived from explicit operations or transforms
+- Proposals must be explicitly accepted to produce canonical operations
+- Rejecting a proposal produces no canonical mutation
+- Proposal acceptance produces explicit operations recorded in history
+- Proposals are auditable and reference their origin
+
+### Proposal Lifecycle
+
+- Proposals are created by explicit user or plugin action
+- Proposals may be reviewed by any user with read access
+- Proposals may be accepted only by users authorized to write to affected fields
+- Proposals may be rejected by the proposer or by authorized users
+- Proposals may expire or be withdrawn without affecting canonical state
+
+### Proposal Visibility
+
+- Proposals are visible to all peers within the workspace
+- Proposals sync like other operations but do not affect canonical state
+- Proposals may be filtered or grouped in UI for review
+- Multiple proposals may exist for the same field simultaneously
+
+### Relationship to Other Concepts
+
+- Proposals may be created from overlay changes (commit as proposal instead of direct commit)
+- Proposals may be created from transform previews
+- Proposals do not create conflicts; conflicts arise only from committed canonical operations
+
+### Proposals and Overlays
+
+- Proposals may be created from overlay state
+- Proposals reference canonical operations that would result if accepted
+- Accepting a proposal emits canonical operations, not overlay operations
+- Discarding an overlay does not discard proposals created from it
+- Proposals created from overlays become independent once created
+
+### Proposals and Conflicts Independence
+
+- Proposals and conflicts are independent derived states
+- Proposals do not suppress, replace, or affect conflict derivation
+- Proposals never affect conflict detection or resolution until accepted
+- A field may have both an open conflict and pending proposals simultaneously
+- Conflict resolution and proposal acceptance are orthogonal operations
+
+### Proposal Acceptance Semantics
+
+- Accepting a proposal is semantically equivalent to performing the proposed operation directly
+- Proposal acceptance must not bypass conflict detection or resolution rules
+- If the proposed field is not conflicted, proposal acceptance emits a normal edit operation
+- If the proposed field is conflicted, proposal acceptance emits a resolve_conflict operation
+- Proposal acceptance respects the same authorization rules as direct edits
+- Accepting a proposal for a conflicted field resolves the conflict to the proposed value
+
+### Use Cases
+
+- Collaborative review workflows (designer proposes → SM approves)
+- Safe cross-plugin suggestions
+- Bulk change review before commit
+- Non-destructive experimentation shared with team
+
+### Open
+
+- Proposal expiration policies
+- Proposal notification/subscription model
+- Proposal dependencies (accept A requires accepting B)
+
+---
+
 ## Queries & Derived Views
 
 - Queries are read-only
 - Deterministic results given same state
 - Binding-aware semantics (query "people" returns all bound facet types)
 - No hidden mutations
+
+### Parameterized Queries
+
+- Parameterized queries are read-only and deterministic
+- Parameterized queries must not emit operations
+- Query parameters may reference canonical state or local overlay state
+- Given the same canonical state and parameter values, query results are deterministic
+- Parameterized queries must not implicitly depend on untracked external state
+- Parameters enable dynamic selection (e.g., "all people in these scenes", "all cues related to this event")
+
+### Derived Entity Sets
+
+- Derived entity sets are read-only query results
+- Derived entities do not accept direct mutation
+- Derived sets may feel like "virtual entities" but are never writable
+- Materializing derived entities into canonical entities requires explicit user action
+- Materialization produces explicit operations recorded in history
+- Canonical state must not contain back-references to derived sets
+- Canonical entities must not reference derived entities by ID
+- Derived sets exist only as query results; they have no persistent identity
+
+### Query Determinism Under Overlay + Sync
+
+- Queries are evaluated against consistent snapshots of state
+- Overlay queries reflect overlay state layered atop canonical state
+- Queries must not observe partially applied canonical operations
+- Sync application is atomic from the perspective of query evaluation
 
 ### Open
 
@@ -675,6 +921,23 @@ These three layers are distinct and independently created.
 
 - TODO: Plugins specify human readable display field and optional semantic identifier key
 
+### Local-Only Plugins
+
+Local-only plugins produce data that exists only for one user and never syncs to canonical state.
+
+- Local-only plugin data is excluded from canonical sync
+- Local-only data may reference canonical entities
+- Local-only plugins must not emit canonical operations
+- Local-only facets are stored separately from canonical facets
+- Local-only data follows the same operation/bundle model locally
+- Local-only plugins function fully offline
+
+Use cases:
+- Personal notes and annotations
+- Scratch data and working calculations
+- Private workflows and experiments
+- User-specific display preferences
+
 ### Jobs
 
 - Jobs produce operation bundles, never mutate state directly
@@ -683,10 +946,35 @@ These three layers are distinct and independently created.
 - Partial job output is discarded entirely
 - Job failure surfaces error to user with context
 
+### Structured Imports & Exports
+
+Imports and exports are treated as deterministic, auditable, previewable jobs.
+
+- Imports run inside staging overlays by default
+- Imports produce explicit operations recorded in history only upon commit
+- Imports must support dry-run/preview before committing
+- Import preview is the overlay state before commit
+- Exports operate on derived views (read-only)
+- Import/export operations are auditable
+- Import source metadata is preserved in operation attribution
+- Failed imports produce no operations
+- Discarding an import overlay discards all imported data without affecting canonical state
+
 ### Views
 
 - Plugin view crashes do not corrupt state
 - Crashed views show error boundary with retry option
+
+### UI/UX Integration Elements
+
+These elements do not affect correctness but are explicitly allowed and encouraged.
+
+- Conflict and proposal indicators are derived UI state
+- Badges and indicators must reflect underlying semantic state
+- Plugins may embed conflict/proposal/overlay components contextually
+- UI state (expanded/collapsed, scroll position, selection) is local-only and non-syncing
+- Plugins may provide custom conflict resolution UI for their facet types
+- Plugins may provide custom proposal review UI
 
 ### Open
 
@@ -786,6 +1074,22 @@ These three layers are distinct and independently created.
 - A peer must not reject an operation solely due to missing historical context
 - Operations that depend on unseen history may be accepted provisionally
 - Final authorization validity is determined once all relevant history is integrated
+
+### Schema-Scoped Permissions
+
+Permissions may be scoped not just to entities, but to Concepts, fields, transforms, and proposals.
+
+- Permissions may be scoped to Concepts, fields, and operation types
+- Proposing changes may require fewer permissions than applying them directly
+- Permission changes are explicit operations and are auditable
+- Authorization for conflict resolution equals authorization for field write
+- Transform execution may be gated by permissions distinct from direct field edit
+- Read permissions and write permissions are independently assignable
+
+Use cases:
+- Designers propose changes → Stage Managers approve and commit
+- Field-level restrictions (e.g., only SM can edit cue numbers)
+- Concept-level restrictions (e.g., only certain roles can create Person entities)
 
 ### Leader Role
 
@@ -941,5 +1245,54 @@ These three layers are distinct and independently created.
 | Unbinding removes conflicts (not resolves them)                 | Decided | High       |
 | Post-mistake canonical state persists until explicit change     | Decided | High       |
 | Full audit trail for mistakes and recoveries                    | Decided | High       |
+| Parameterized queries are read-only and deterministic           | Decided | High       |
+| Query parameters may reference overlay state                    | Decided | High       |
+| Derived entity sets are read-only                               | Decided | High       |
+| Materializing derived entities requires explicit action         | Decided | High       |
+| Staging overlays isolated from canonical state                  | Decided | High       |
+| Overlay commit produces explicit operations                     | Decided | High       |
+| Overlay discard affects no canonical state                      | Decided | High       |
+| Proposals do not modify canonical state                         | Decided | High       |
+| Proposal acceptance produces explicit operations                | Decided | High       |
+| Proposal rejection produces no mutation                         | Decided | High       |
+| Local field overrides do not modify canonical fields            | Decided | High       |
+| Overrides are auditable and visibly marked                      | Decided | High       |
+| Removing override restores canonical projection                 | Decided | High       |
+| Schema-scoped permissions (Concepts, fields, operations)        | Decided | High       |
+| Proposing may require fewer permissions than applying           | Decided | High       |
+| Local-only plugins excluded from canonical sync                 | Decided | High       |
+| Local-only plugins may reference canonical entities             | Decided | High       |
+| Imports produce explicit operations                             | Decided | High       |
+| Imports must support dry-run/preview                            | Decided | High       |
+| Bulk operations represented as bundles                          | Decided | High       |
+| Bulk operations must be previewable                             | Decided | High       |
+| UI indicators reflect underlying semantic state                 | Decided | High       |
+| Transform Bindings are explicit user-declared rules             | Decided | High       |
+| Transform Bindings must be deterministic                        | Decided | High       |
+| Transform Bindings execute on source field change               | Decided | High       |
+| Transform Bindings must not self-trigger or cycle               | Decided | High       |
+| Transform Binding outputs are explicit operations               | Decided | High       |
+| Transform Bindings subject to conflict detection                | Decided | High       |
+| Transform Bindings must not auto-resolve conflicts              | Decided | High       |
+| Transform Bindings require write permission                     | Decided | High       |
+| Transform Bindings visible in history/audit                     | Decided | High       |
+| Transform Bindings must not infer intent or merge entities      | Decided | High       |
+| Transform Bindings do not suppress concurrent outputs           | Decided | High       |
+| Concurrent differing transform outputs create conflicts         | Decided | High       |
+| Transform Binding disable does not revert prior operations      | Decided | High       |
+| Transform Binding lifecycle changes are auditable               | Decided | High       |
+| Proposals may be created from overlay state                     | Decided | High       |
+| Accepting proposal emits canonical ops, not overlay ops         | Decided | High       |
+| Discarding overlay does not discard proposals from it           | Decided | High       |
+| Concept entity deletion does not rewrite history                | Decided | High       |
+| Historical refs to deleted Concepts remain resolvable           | Decided | High       |
+| Queries evaluated against consistent state snapshots            | Decided | High       |
+| Queries must not observe partial canonical operations           | Decided | High       |
+| Sync application atomic from query perspective                  | Decided | High       |
 | P2P replication specifics                                       | Open    | Medium     |
 | Plugin sandboxing                                               | Open    | Low        |
+| Overlay persistence across sessions                             | Open    | Medium     |
+| Overlay sharing between peers                                   | Open    | Low        |
+| Proposal expiration policies                                    | Open    | Medium     |
+| Transform Binding dependency ordering                           | Open    | Medium     |
+| Transform Binding versioning and migration                      | Open    | Medium     |

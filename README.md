@@ -16,8 +16,9 @@ The daily reality: stage managers calculate call times by hand for 50 people, li
 - **LAN-collaborative** — Sync directly with your team over local network. No cloud subscription required.
 - **Plugin-extensible** — Core handles storage and sync. Plugins provide workflows.
 - **Conflict-aware** — When offline edits collide, you see what happened and decide the resolution.
+- **Safe experimentation** — Staging overlays let you preview changes before committing. Proposals let collaborators suggest changes for review.
 
-The core insight: most production paperwork is _derived_ from the same underlying information. If the data lives in one place and relationships are explicit, everything can stay in sync.
+The core insight: most production paperwork is _derived_ from the same underlying information. If the data lives in one place and relationships are explicit, everything can stay in sync. Transform Bindings provide explicit, auditable automation—not hidden formulas.
 
 ---
 
@@ -33,12 +34,15 @@ This isn't "please build my idea for free." I want to be actively involved, and 
 
 ## What's Needed
 
-- **Architecture review** — Is the design sound? What's wrong? What am I missing?
-- **Distributed systems expertise** — The peer-to-peer sync model needs scrutiny
+- **Distributed systems expertise** — The peer-to-peer sync model needs scrutiny (leader election, HLC, partition tolerance)
 - **Production domain knowledge** — What workflows actually matter? What would you use?
+- **Architecture review** — Are there gaps? What's wrong? What am I missing?
 - **Eventually: implementation** — A clean Rust core, plugin runtime, basic UI
 
-Read the [Architecture Overview](docs/ARCHITECTURE.md) for the full design. It's honest about what's firm vs. what I don't know.
+The core architecture—Concepts & Bindings, Transform Bindings, Staging Overlays, Proposals—is designed. See:
+
+- [Architecture Overview](docs/ARCHITECTURE.md) — The big picture and how pieces fit together
+- [Invariants](docs/INVARIANTS.md) — Detailed specifications and rules that must always hold
 
 ---
 
@@ -52,13 +56,14 @@ If it makes money someday, it'll be from optional cloud hosting or donations—n
 
 ## License
 
-TBD. I want to prevent someone from taking this code and selling it as a proprietary product. Likely AGPL or similar copyleft license, but could do MIT or GPL. Open to input.
+TBD. Likely AGPL or similar copyleft license, but could do MIT or GPL. Open to input.
 
 ---
 
 ## Get Involved
 
-- Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design overview
+- Read [docs/INVARIANTS.md](docs/INVARIANTS.md) for detailed specifications
 - Open an issue with questions, critiques, or ideas
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for how to participate
 

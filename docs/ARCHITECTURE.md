@@ -64,10 +64,13 @@ The core handles:
 - **Storage** — Entity/facet/edge graph in SQLite (WAL mode), asset blobs on disk
 - **Sync** — Peer-to-peer replication with leader election, network partition tolerance
 - **History** — Append-only operation log with hybrid logical clocks
-- **Identity** — Entity merging, deduplication, cross-plugin references
+- **Identity** — Entity merging, deduplication, cross-plugin references via Concepts
 - **Conflicts** — Detection, human-readable presentation, reversible resolution
+- **Overlays** — Staging areas for safe experimentation and preview
+- **Proposals** — Non-authoritative suggested changes visible to collaborators
+- **Transform Bindings** — Explicit automation rules that emit auditable operations
 - **Plugins** — Schema registration, capability enforcement, cross-plugin bindings
-- **Queries** — Declarative queries that respect bindings and permissions
+- **Queries** — Declarative queries that respect bindings, overlays, and permissions
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -291,6 +294,105 @@ Conflicts are non-blocking by nature, but interface should encourage users to re
 
 ---
 
+## Staging Overlays
+
+Staging overlays are temporary, non-canonical layers of operations that enable safe experimentation and preview.
+
+### Core Concept
+
+An overlay is an isolated workspace where users can:
+
+- Make changes without affecting canonical state
+- Preview bulk operations, imports, or transforms
+- Experiment with "what-if" scenarios
+- Stage data entry before committing
+
+Overlays behave like canonical state for all read operations, but nothing syncs or becomes permanent until explicitly committed.
+
+### Key Semantics
+
+- **Isolation** — Overlay operations do not affect canonical history until committed
+- **Atomic commit** — Committing an overlay either fully succeeds or fully fails
+- **Safe discard** — Discarding an overlay affects no canonical state
+- **Query support** — Parameterized queries can reference overlay state as input
+
+### Example: Import Preview
+
+1. User initiates an import from an external file
+2. Import runs inside a staging overlay (the default)
+3. User sees exactly what will be created or modified
+4. User reviews, makes adjustments, then commits
+5. Commit produces explicit operations in canonical history
+6. If something looks wrong, discard the overlay—nothing happened
+
+---
+
+## Proposals & Suggestions
+
+Proposals are non-authoritative suggested changes that are visible to collaborators but do not alter canonical state until explicitly accepted.
+
+### When to Use Proposals
+
+- Collaborative review workflows (designer proposes → SM approves)
+- Safe cross-plugin suggestions
+- Bulk change review before commit
+- Non-destructive experimentation shared with team
+
+### Key Semantics
+
+- **No canonical mutation** — Proposals do not modify canonical state
+- **Independent from conflicts** — Proposals and conflicts are orthogonal; a field can have both
+- **Explicit acceptance** — Accepting a proposal emits canonical operations
+- **No bypass** — Proposal acceptance respects the same authorization and conflict rules as direct edits
+
+### Proposals and Overlays
+
+Proposals can be created from overlay state. When you create a proposal from an overlay:
+
+- The proposal references what canonical operations would result if accepted
+- Discarding the overlay does not discard proposals created from it
+- Proposals become independent once created
+
+---
+
+## Transform Bindings
+
+Transform Bindings are explicit, deterministic semantic rules that produce canonical state changes from other canonical state.
+
+**Key distinction:** Transform Bindings automate _how_ truth is kept consistent, not _what_ truth is. They are not formula fields or live calculations—they're explicit user-defined rules that emit auditable operations.
+
+### How They Work
+
+1. User creates a Transform Binding declaring source fields and target fields
+2. When source fields change, the binding executes automatically
+3. The binding emits normal canonical operations (auditable, attributable)
+4. If concurrent transform outputs differ, a conflict is created (just like manual edits)
+
+### Safety Guarantees
+
+- **Deterministic** — Given identical state, produces identical outputs
+- **No cycles** — Transform Bindings must not self-trigger
+- **No auto-resolution** — Transforms cannot automatically resolve conflicts
+- **Visible in history** — All transform outputs are traceable to their source
+
+### Example: Cue Numbering
+
+A transform binding could automatically renumber cues when their order changes:
+
+1. User reorders cues in a scene
+2. Transform binding detects the order change
+3. Binding emits operations to update cue numbers
+4. Changes appear in history as "Transform: Renumber cues in Scene 2"
+
+### What Transform Bindings Cannot Do
+
+- Infer user intent
+- Merge entities
+- Create Concept entities
+- Resolve conflicts automatically
+
+---
+
 ## Plugin System
 
 ### Philosophy
@@ -327,6 +429,23 @@ Plugins request host capabilities:
 
 Capabilities are granted per-user and enforced by the core. A plugin can't access the filesystem unless you've allowed it.
 
+### Local-Only Plugins
+
+Some plugins produce data that should never sync—personal notes, scratch calculations, private workflows. Local-only plugins:
+
+- Are excluded from canonical sync entirely
+- May reference canonical entities (read-only)
+- Must not emit canonical operations
+- Follow the same operation/bundle model locally
+- Function fully offline
+
+Use cases:
+
+- Personal notes and annotations
+- Scratch data and working calculations
+- User-specific display preferences
+- Private experiments before sharing
+
 ---
 
 ## Jobs
@@ -349,6 +468,25 @@ This means jobs are safe to experiment with. You can run a job, see what it woul
 
 Queries are declarative and binding-aware. If you query for "all people," the system knows to include both `contacts.person` and `schedule.attendee` entities (if they're bound via a Concept).
 
+### Parameterized Queries
+
+Queries can accept parameters that reference canonical state or overlay state:
+
+- "All people in these scenes" (parameter: scene list)
+- "All cues related to this event" (parameter: event reference)
+- Given the same state and parameters, results are always deterministic
+
+Parameterized queries are read-only—they never emit operations.
+
+### Derived Entity Sets
+
+Query results that return entities are called derived entity sets. Key constraints:
+
+- Derived entities are read-only—they cannot be directly mutated
+- Canonical state must not contain back-references to derived sets
+- Materializing derived entities into canonical entities requires explicit user action
+- Derived sets have no persistent identity; they exist only as query results
+
 ### Derived Views
 
 Read-only views computed from the graph. Used for:
@@ -358,6 +496,14 @@ Read-only views computed from the graph. Used for:
 - Cross-plugin summaries
 
 Derived views are never stored—they're always computed fresh from source data.
+
+### Query Determinism
+
+Queries are evaluated against consistent snapshots of state:
+
+- Overlay queries reflect overlay state layered atop canonical state
+- Queries must not observe partially applied canonical operations
+- Sync application is atomic from the perspective of query evaluation
 
 ---
 
@@ -416,14 +562,24 @@ With Openprod:
 
 Things we will **not** do:
 
-| We won't do this                        | Why                                                     |
-| --------------------------------------- | ------------------------------------------------------- |
-| Background auto-mutations               | Implicit behavior erodes trust                          |
-| Formula fields / live calculation rules | All transformations must be explicit and user-approved  |
-| Hidden coupling between plugins         | All interoperability must be visible and explainable    |
-| Require a central server                | Peer-to-peer by default; cloud is optional              |
-| Replace every production tool           | We're a collaboration substrate, not an opinionated app |
-| Silently merge conflicting edits        | Users must see and resolve conflicts explicitly         |
+| We won't do this                        | Why                                                                         |
+| --------------------------------------- | --------------------------------------------------------------------------- |
+| Background auto-mutations               | Implicit behavior erodes trust                                              |
+| Formula fields / live calculation rules | Transformations must be explicit, auditable operations (see below)          |
+| Hidden coupling between plugins         | All interoperability must be visible and explainable                        |
+| Require a central server                | Peer-to-peer by default; cloud is optional                                  |
+| Replace every production tool           | We're a collaboration substrate, not an opinionated app                     |
+| Silently merge conflicting edits        | Users must see and resolve conflicts explicitly                             |
+| Auto-resolve conflicts                  | All resolutions require explicit user action                                |
+
+**Note on Transform Bindings:** Transform Bindings are our answer to "how do I automate derived data?" They differ from formula fields in critical ways:
+
+- They emit explicit, auditable operations (not live calculations)
+- They're subject to normal conflict detection
+- They cannot auto-resolve conflicts or infer user intent
+- They're visible in history and traceable to their source
+
+Transform Bindings automate _how_ truth is kept consistent, not _what_ truth is.
 
 ---
 
@@ -447,13 +603,19 @@ These are areas where I need input:
 
 2. ~~**Where does canonical data live?**~~ — **RESOLVED.** Concept entities own canonical values. Plugin entities project those values via bindings. Identity flows upward; data stays local.
 
-3. **Peer-to-peer replication** — What's the industry standard here? I've designed around leader election and HLC, but I don't know if there are better approaches.
+3. ~~**How do we handle derived/calculated data?**~~ — **RESOLVED.** Transform Bindings provide explicit, deterministic, auditable automation. They emit normal operations and are subject to conflict detection. See INVARIANTS.md for complete semantics.
 
-4. **Plugin sandboxing** — How strict should isolation be? WASM? Process isolation? What's the right tradeoff between safety and capability?
+4. **Peer-to-peer replication** — What's the industry standard here? I've designed around leader election and HLC, but I don't know if there are better approaches.
 
-5. **Schema evolution** — How do plugins handle breaking changes to their facet definitions? How do Concept definitions evolve?
+5. **Plugin sandboxing** — How strict should isolation be? WASM? Process isolation? What's the right tradeoff between safety and capability?
 
-6. **Peer discovery** — How do peers find each other on LAN? mDNS? Something else?
+6. **Schema evolution** — How do plugins handle breaking changes to their facet definitions? How do Concept definitions evolve? How do Transform Bindings migrate?
+
+7. **Peer discovery** — How do peers find each other on LAN? mDNS? Something else?
+
+8. **Overlay persistence** — Should staging overlays persist across sessions? How do we handle overlays when canonical state changes underneath them?
+
+9. **Proposal workflows** — How do proposals expire? What notification/subscription model makes sense? Can proposals have dependencies (accept A requires accepting B)?
 
 ---
 
@@ -477,17 +639,24 @@ These are areas where I need input:
 | Concept Definition    | A schema-level semantic type (e.g., "Person", "Cue") created by user action                              |
 | Concept Entity        | An instance-level object representing real-world identity, created by explicit equivalence assertion     |
 | Binding               | A declaration that a plugin facet is semantically compatible with a Concept definition                   |
+| Transform Binding     | An explicit, deterministic rule that produces canonical operations when source fields change             |
 | Equivalence Assertion | An explicit user action stating that entities across multiple plugins refer to the same real-world thing |
 | Canonical Value       | The authoritative value for a Concept field, established through conflict resolution                     |
 | Projection            | The semantic enforcement of canonical Concept values to bound plugin fields                              |
+| Local Override        | A controlled, auditable divergence from a canonical value that does not participate in conflicts         |
 | Unbinding             | Removing semantic linkage between a plugin entity and a Concept entity                                   |
+| Staging Overlay       | A temporary, non-canonical layer of operations for safe experimentation and preview                      |
+| Proposal              | A non-authoritative suggested change visible to collaborators, not applied until explicitly accepted     |
 | Oplog                 | Append-only log of all operations; the source of truth                                                   |
 | HLC                   | Hybrid Logical Clock; provides deterministic ordering across peers                                       |
 | Redirect              | A pointer from a merged entity to its canonical version                                                  |
 | Adoption              | Making a plugin's schema available workspace-wide                                                        |
 | Capability            | A host feature (filesystem, network, etc.) that plugins can request                                      |
+| Local-Only Plugin     | A plugin whose data exists only for one user and never syncs to canonical state                          |
 | Job                   | A compute task that produces operations without direct mutation                                          |
 | Derived View          | A read-only view computed from graph queries                                                             |
+| Derived Entity Set    | A read-only query result returning entities; cannot be mutated directly or referenced by canonical state |
+| Parameterized Query   | A query that accepts parameters referencing canonical or overlay state                                   |
 
 ---
 
