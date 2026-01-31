@@ -146,11 +146,11 @@ The tension:
 
 The system uses three distinct layers, each created independently:
 
-| Layer | What It Is | Created When |
-|-------|-----------|--------------|
-| **Concept Definition** | A schema-level semantic type (e.g., "Person", "Cue") | User explicitly creates it |
-| **Binding** | A declaration that a plugin facet is semantically compatible with a Concept | User configures plugin→Concept field mappings |
-| **Concept Entity** | An instance representing a real-world identity | User explicitly asserts entity equivalence |
+| Layer                  | What It Is                                                                  | Created When                                  |
+| ---------------------- | --------------------------------------------------------------------------- | --------------------------------------------- |
+| **Concept Definition** | A schema-level semantic type (e.g., "Person", "Cue")                        | User explicitly creates it                    |
+| **Binding**            | A declaration that a plugin facet is semantically compatible with a Concept | User configures plugin→Concept field mappings |
+| **Concept Entity**     | An instance representing a real-world identity                              | User explicitly asserts entity equivalence    |
 
 ### How It Works
 
@@ -469,25 +469,25 @@ These are areas where I need input:
 
 ## Glossary
 
-| Term | Definition |
-| ---- | ---------- |
-| Entity | A thing with a stable ID (person, cue, prop, etc.) |
-| Facet | A set of fields attached to an entity by a plugin |
-| Edge | A relationship between two entities |
-| Concept Definition | A schema-level semantic type (e.g., "Person", "Cue") created by user action |
-| Concept Entity | An instance-level object representing real-world identity, created by explicit equivalence assertion |
-| Binding | A declaration that a plugin facet is semantically compatible with a Concept definition |
-| Equivalence Assertion | An explicit user action stating that multiple plugin entities refer to the same real-world thing |
-| Canonical Value | The authoritative value for a Concept field, established through conflict resolution |
-| Projection | The semantic enforcement of canonical Concept values to bound plugin fields |
-| Unbinding | Removing semantic linkage between a plugin entity and a Concept entity |
-| Oplog | Append-only log of all operations; the source of truth |
-| HLC | Hybrid Logical Clock; provides deterministic ordering across peers |
-| Redirect | A pointer from a merged entity to its canonical version |
-| Adoption | Making a plugin's schema available workspace-wide |
-| Capability | A host feature (filesystem, network, etc.) that plugins can request |
-| Job | A compute task that produces operations without direct mutation |
-| Derived View | A read-only view computed from graph queries |
+| Term                  | Definition                                                                                               |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| Entity                | A thing with a stable ID (person, cue, prop, etc.)                                                       |
+| Facet                 | A set of fields attached to an entity by a plugin                                                        |
+| Edge                  | A relationship between two entities                                                                      |
+| Concept Definition    | A schema-level semantic type (e.g., "Person", "Cue") created by user action                              |
+| Concept Entity        | An instance-level object representing real-world identity, created by explicit equivalence assertion     |
+| Binding               | A declaration that a plugin facet is semantically compatible with a Concept definition                   |
+| Equivalence Assertion | An explicit user action stating that entities across multiple plugins refer to the same real-world thing |
+| Canonical Value       | The authoritative value for a Concept field, established through conflict resolution                     |
+| Projection            | The semantic enforcement of canonical Concept values to bound plugin fields                              |
+| Unbinding             | Removing semantic linkage between a plugin entity and a Concept entity                                   |
+| Oplog                 | Append-only log of all operations; the source of truth                                                   |
+| HLC                   | Hybrid Logical Clock; provides deterministic ordering across peers                                       |
+| Redirect              | A pointer from a merged entity to its canonical version                                                  |
+| Adoption              | Making a plugin's schema available workspace-wide                                                        |
+| Capability            | A host feature (filesystem, network, etc.) that plugins can request                                      |
+| Job                   | A compute task that produces operations without direct mutation                                          |
+| Derived View          | A read-only view computed from graph queries                                                             |
 
 ---
 
