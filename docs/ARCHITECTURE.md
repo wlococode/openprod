@@ -129,39 +129,72 @@ The Contacts plugin sees Jane as a contact. The Crew plugin sees her as a crew m
 
 ## Concepts & Bindings
 
-**This is the part of the architecture I'm least certain about. I have a working model, but I'd love input on whether there's a better approach.**
+Concepts are the mechanism for unifying identity across plugins while preserving safety, reversibility, auditability, and offline correctness.
+
+**Anchor invariant:** Concept entities own identity; plugin entities describe identity; bindings connect them; nothing else fuses data.
 
 ### The Problem
 
-Plugins are independent, and they should be. No plugin should be dependent on another plugin. They don't know about each other. But, users need cross-plugin identity: the "Jane Doe" in my contacts should be the same "Jane Doe" in my schedule.
+Plugins are independent, and they should be. No plugin should be dependent on another plugin. They don't know about each other. But users need cross-plugin identity: the "Jane Doe" in my contacts should be the same "Jane Doe" in my schedule.
 
 The tension:
 
 - If we force plugins to use standardized types (Person, Cue, Prop), we lock users into a rigid structure
 - If plugins define whatever they want, users have to wire everything manually
 
-### Current Approach: Concepts and Bindings
+### The Solution: Three-Layer Model
 
-A **Concept** is a user-defined semantic anchor. It says "this is what a Person means in this workspace."
+The system uses three distinct layers, each created independently:
 
-A **Binding** maps plugin fields to Concept fields. When a user draws a binding from `contacts.person.name` and `schedule.attendee.name` to a concept field `Person.name`, they're saying "these represent the same thing."
+| Layer | What It Is | Created When |
+|-------|-----------|--------------|
+| **Concept Definition** | A schema-level semantic type (e.g., "Person", "Cue") | User explicitly creates it |
+| **Binding** | A declaration that a plugin facet is semantically compatible with a Concept | User configures plugin→Concept field mappings |
+| **Concept Entity** | An instance representing a real-world identity | User explicitly asserts entity equivalence |
 
-The core then handles:
+### How It Works
 
-- Recognizing when two entities refer to the same real-world thing
-- Merging/deduplicating as needed
-- Keeping references valid across plugins
+1. **User creates a Concept definition** — e.g., "Person" with fields `name`, `email`, `phone`
 
-### Open Questions
+2. **User binds plugin facets to the Concept** — e.g., `contacts.person.name` → `Person.name` and `schedule.attendee.displayName` → `Person.name`. This declares semantic compatibility but does not create any entities or assert any identity.
 
-Where should the "canonical" data live when two plugins are bound?
+3. **User asserts entity equivalence** — e.g., "contacts:person:jane and schedule:attendee:jd are the same real-world person." This creates a Concept entity atomically.
 
-- Option A: One plugin retains the data, the other holds references
-- Option B: A concept-level entity exists outside both plugins; both reference it
+4. **Conflicts are surfaced** — If Jane's contact says "Jane Doe" and the attendee says "J. Doe", a conflict is created on `Person.name`. The Concept entity exists, but canonical values require explicit resolution.
 
-How do we make this intuitive for non-technical users? Schema changes are dangerous and confusing.
+5. **After resolution, values project** — Once resolved, all bound plugin fields project the canonical Concept value. Editing any bound field updates the Concept directly.
 
-Is there prior art I should study? (RDF, Notion relations, Airtable linked records, contact merging in email clients?)
+### Key Semantics
+
+**Canonical data lives on Concept entities.** Plugin entities reference Concepts; they don't own shared identity.
+
+**Binding ≠ equivalence.** Binding a facet to a Concept declares compatibility. Creating a Concept entity requires explicit user assertion.
+
+**Single-entity binding is valid.** A Concept entity can have just one plugin entity bound. Concepts represent identity, not deduplication.
+
+**Unbinding is safe.** Unbinding removes semantic linkage only. Plugin entities retain their last concrete values. History is preserved.
+
+**Subset relationships emerge naturally.** Lighting cues ⊆ SM cues is expressed by which plugin entities are bound, not by Concept hierarchy.
+
+### Example: Person Concept
+
+```
+Concept Definition: Person
+├── Fields: name, email, phone
+
+Concept Entity: person:jane
+├── Canonical: name="Jane Doe", email="jane@example.com"
+├── Bound:
+│   ├── contacts:person:jane-001 (projects name, email)
+│   └── schedule:attendee:jd-42 (projects name)
+```
+
+When a user edits `schedule:attendee:jd-42.displayName` to "Jane Smith", the Concept's canonical `name` updates to "Jane Smith", and `contacts:person:jane-001.name` projects the new value.
+
+### Remaining Open Questions
+
+- Advanced schema UX for non-technical users
+- Concept definition versioning and migration
 
 ---
 
@@ -410,15 +443,15 @@ Things we will **not** do:
 
 These are areas where I need input:
 
-1. **Concepts and Bindings** — Is my model for cross-plugin identity the right approach? Are there better patterns from RDF, linked data, or other systems I should study?
+1. ~~**Concepts and Bindings**~~ — **RESOLVED.** The three-layer model (Concept definitions, Bindings, Concept entities) is finalized. See INVARIANTS.md for complete semantics.
 
-2. **Where does canonical data live?** — When two plugins bind to the same Concept, which one "owns" the data? Or should there be a concept-level entity outside both?
+2. ~~**Where does canonical data live?**~~ — **RESOLVED.** Concept entities own canonical values. Plugin entities project those values via bindings. Identity flows upward; data stays local.
 
 3. **Peer-to-peer replication** — What's the industry standard here? I've designed around leader election and HLC, but I don't know if there are better approaches.
 
 4. **Plugin sandboxing** — How strict should isolation be? WASM? Process isolation? What's the right tradeoff between safety and capability?
 
-5. **Schema evolution** — How do plugins handle breaking changes to their facet definitions?
+5. **Schema evolution** — How do plugins handle breaking changes to their facet definitions? How do Concept definitions evolve?
 
 6. **Peer discovery** — How do peers find each other on LAN? mDNS? Something else?
 
@@ -436,21 +469,25 @@ These are areas where I need input:
 
 ## Glossary
 
-| Term         | Definition                                                          |
-| ------------ | ------------------------------------------------------------------- |
-| Entity       | A thing with a stable ID (person, cue, prop, etc.)                  |
-| Facet        | A set of fields attached to an entity by a plugin                   |
-| Edge         | A relationship between two entities                                 |
-| Concept      | A user-defined semantic anchor for shared identity across plugins   |
-| Binding      | A mapping from plugin fields to Concept fields                      |
-| Oplog        | Append-only log of all operations; the source of truth              |
-| HLC          | Hybrid Logical Clock; provides deterministic ordering across peers  |
-| Redirect     | A pointer from a merged entity to its canonical version             |
-| Canonical    | The authoritative version of a merged entity                        |
-| Adoption     | Making a plugin's schema available workspace-wide                   |
-| Capability   | A host feature (filesystem, network, etc.) that plugins can request |
-| Job          | A compute task that produces operations without direct mutation     |
-| Derived View | A read-only view computed from graph queries                        |
+| Term | Definition |
+| ---- | ---------- |
+| Entity | A thing with a stable ID (person, cue, prop, etc.) |
+| Facet | A set of fields attached to an entity by a plugin |
+| Edge | A relationship between two entities |
+| Concept Definition | A schema-level semantic type (e.g., "Person", "Cue") created by user action |
+| Concept Entity | An instance-level object representing real-world identity, created by explicit equivalence assertion |
+| Binding | A declaration that a plugin facet is semantically compatible with a Concept definition |
+| Equivalence Assertion | An explicit user action stating that multiple plugin entities refer to the same real-world thing |
+| Canonical Value | The authoritative value for a Concept field, established through conflict resolution |
+| Projection | The semantic enforcement of canonical Concept values to bound plugin fields |
+| Unbinding | Removing semantic linkage between a plugin entity and a Concept entity |
+| Oplog | Append-only log of all operations; the source of truth |
+| HLC | Hybrid Logical Clock; provides deterministic ordering across peers |
+| Redirect | A pointer from a merged entity to its canonical version |
+| Adoption | Making a plugin's schema available workspace-wide |
+| Capability | A host feature (filesystem, network, etc.) that plugins can request |
+| Job | A compute task that produces operations without direct mutation |
+| Derived View | A read-only view computed from graph queries |
 
 ---
 
@@ -466,15 +503,16 @@ These are areas where I need input:
 6. Stage manager resolves each conflict
 7. All peers now have identical state
 
-### Scenario B: User merges duplicate entities
+### Scenario B: User asserts entity equivalence
 
-1. Contacts plugin has "John Smith"
-2. Schedule plugin has "J. Smith" as an attendee
-3. User recognizes these are the same person
-4. User merges them, choosing "John Smith" as canonical
-5. System creates redirect from J. Smith → John Smith
-6. All references to "J. Smith" now resolve to "John Smith"
-7. Both plugins see the merged entity with all facets
+1. Contacts plugin has `contacts:person:john` with name "John Smith"
+2. Schedule plugin has `schedule:attendee:js` with displayName "J. Smith"
+3. User recognizes these refer to the same real-world person
+4. User asserts equivalence — a Person Concept entity is created atomically
+5. Conflict detected: `Person.name` has "John Smith" vs "J. Smith"
+6. User resolves conflict, choosing "John Smith" as canonical
+7. Both plugin fields now project "John Smith"
+8. Editing either field updates the Concept's canonical value
 
 ### Scenario C: Conflict resolution flow
 
