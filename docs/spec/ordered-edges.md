@@ -268,35 +268,24 @@ Non-position edge properties (e.g., `call_text`) follow normal LWW conflict rule
 
 ### Edge Table
 
-Ordered edges are stored in the standard `edges` table. The `_position` is stored in the `properties` column:
+Ordered edges are stored in the standard `edges` table. The `_position` value is stored as a row in the `edge_properties` table with `property_key = "_position"`, following the same per-property storage pattern as all other edge properties:
 
 ```yaml
-# edges.properties (MessagePack)
-{
-  "call_text": "GO",
-  "timing_override": 2.5,
-  "_position": "Pm3xK"          # Internal position identifier
-}
+# edge_properties rows for an ordered edge:
+(edge_id, "call_text", "GO")
+(edge_id, "timing_override", 2.5)
+(edge_id, "_position", "Pm3xK")    # Lexicographically sortable position identifier
 ```
+
+See [sqlite-schema.md](sqlite-schema.md) for the `edge_properties` table DDL.
 
 ### Index
 
 ```sql
-CREATE INDEX idx_edges_target_type ON edges (target_id, edge_type)
-    WHERE deleted_at IS NULL;
+CREATE INDEX idx_edges_target ON edges (target_id, edge_type) WHERE deleted_at IS NULL;
 ```
 
-Queries retrieve edges by (target, type) and sort by `_position` in application code.
-
-For large lists, a position-specific index may be added:
-
-```sql
-CREATE INDEX idx_edges_ordered ON edges (
-    target_id,
-    edge_type,
-    (json_extract(properties, '$._position'))
-) WHERE deleted_at IS NULL;
-```
+Queries retrieve edges by `(target_id, edge_type)` and sort by `_position` in application code. The `_position` value is read from `edge_properties` and sorted in memory.
 
 ---
 

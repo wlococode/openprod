@@ -6,6 +6,7 @@ use crate::field_value::FieldValue;
 use crate::hlc::Hlc;
 use crate::identity::{verify_signature, ActorIdentity};
 use crate::ids::*;
+use crate::vector_clock::VectorClock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CrdtType {
@@ -13,7 +14,7 @@ pub enum CrdtType {
     List,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationPayload {
     CreateEntity {
         entity_id: EntityId,
@@ -61,10 +62,19 @@ pub enum OperationPayload {
         edge_type: String,
         source_id: EntityId,
         target_id: EntityId,
-        properties: Vec<u8>,
+        properties: Vec<(String, FieldValue)>,
     },
     DeleteEdge {
         edge_id: EdgeId,
+    },
+    SetEdgeProperty {
+        edge_id: EdgeId,
+        property_key: String,
+        value: FieldValue,
+    },
+    ClearEdgeProperty {
+        edge_id: EdgeId,
+        property_key: String,
     },
     CreateOrderedEdge {
         edge_id: EdgeId,
@@ -73,7 +83,7 @@ pub enum OperationPayload {
         target_id: EntityId,
         after: Option<EdgeId>,
         before: Option<EdgeId>,
-        properties: Vec<u8>,
+        properties: Vec<(String, FieldValue)>,
     },
     MoveOrderedEdge {
         edge_id: EdgeId,
@@ -123,6 +133,18 @@ pub enum OperationPayload {
         action_params: Vec<u8>,
         auto_accept: bool,
     },
+    RestoreEntity {
+        entity_id: EntityId,
+    },
+    RestoreEdge {
+        edge_id: EdgeId,
+    },
+    ResolveConflict {
+        conflict_id: ConflictId,
+        entity_id: EntityId,
+        field_key: String,
+        chosen_value: Option<FieldValue>,
+    },
 }
 
 impl OperationPayload {
@@ -139,18 +161,23 @@ impl OperationPayload {
             | Self::ApplyCrdt { entity_id, .. }
             | Self::ClearAndAdd { entity_id, .. }
             | Self::AddToTable { entity_id, .. }
-            | Self::RemoveFromTable { entity_id, .. } => Some(*entity_id),
+            | Self::RemoveFromTable { entity_id, .. }
+            | Self::RestoreEntity { entity_id, .. }
+            | Self::ResolveConflict { entity_id, .. } => Some(*entity_id),
             Self::CreateEdge { source_id, .. } | Self::CreateOrderedEdge { source_id, .. } => {
                 Some(*source_id)
             }
             Self::MergeEntities { survivor, .. } => Some(*survivor),
             Self::SplitEntity { source, .. } => Some(*source),
             Self::DeleteEdge { .. }
+            | Self::SetEdgeProperty { .. }
+            | Self::ClearEdgeProperty { .. }
             | Self::MoveOrderedEdge { .. }
             | Self::LinkTables { .. }
             | Self::UnlinkTables { .. }
             | Self::ConfirmFieldMapping { .. }
-            | Self::CreateRule { .. } => None,
+            | Self::CreateRule { .. }
+            | Self::RestoreEdge { .. } => None,
         }
     }
 
@@ -168,6 +195,8 @@ impl OperationPayload {
             Self::ClearAndAdd { .. } => "ClearAndAdd",
             Self::CreateEdge { .. } => "CreateEdge",
             Self::DeleteEdge { .. } => "DeleteEdge",
+            Self::SetEdgeProperty { .. } => "SetEdgeProperty",
+            Self::ClearEdgeProperty { .. } => "ClearEdgeProperty",
             Self::CreateOrderedEdge { .. } => "CreateOrderedEdge",
             Self::MoveOrderedEdge { .. } => "MoveOrderedEdge",
             Self::LinkTables { .. } => "LinkTables",
@@ -178,6 +207,9 @@ impl OperationPayload {
             Self::MergeEntities { .. } => "MergeEntities",
             Self::SplitEntity { .. } => "SplitEntity",
             Self::CreateRule { .. } => "CreateRule",
+            Self::RestoreEntity { .. } => "RestoreEntity",
+            Self::RestoreEdge { .. } => "RestoreEdge",
+            Self::ResolveConflict { .. } => "ResolveConflict",
         }
     }
 
@@ -190,7 +222,7 @@ impl OperationPayload {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Operation {
     pub op_id: OpId,
     pub actor_id: ActorId,
@@ -272,14 +304,6 @@ impl PartialOrd for Operation {
     }
 }
 
-impl PartialEq for Operation {
-    fn eq(&self, other: &Self) -> bool {
-        self.op_id == other.op_id
-    }
-}
-
-impl Eq for Operation {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BundleType {
     UserEdit = 1,
@@ -300,6 +324,7 @@ pub struct Bundle {
     pub deletes: Vec<EntityId>,
     pub meta: Option<Vec<u8>>,
     pub signature: Signature,
+    pub creator_vc: Option<VectorClock>,
 }
 
 impl Bundle {
@@ -309,6 +334,7 @@ impl Bundle {
         hlc: Hlc,
         bundle_type: BundleType,
         operations: &[Operation],
+        creator_vc: Option<VectorClock>,
     ) -> Result<Self, CoreError> {
         let actor_id = identity.actor_id();
         let op_count = operations.len() as u32;
@@ -337,6 +363,9 @@ impl Bundle {
         sign_bytes.push(bundle_type as u8);
         sign_bytes.extend_from_slice(&op_count.to_be_bytes());
         sign_bytes.extend_from_slice(&checksum);
+        let vc_bytes = rmp_serde::to_vec(&creator_vc)
+            .map_err(|e| CoreError::Serialization(e.to_string()))?;
+        sign_bytes.extend_from_slice(&vc_bytes);
         let signature = identity.sign(&sign_bytes);
 
         Ok(Self {
@@ -350,6 +379,7 @@ impl Bundle {
             deletes,
             meta: None,
             signature,
+            creator_vc,
         })
     }
 }

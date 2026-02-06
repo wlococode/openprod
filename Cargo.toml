@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/storage",
+    "crates/engine",
     "crates/harness",
 ]
 
@@ -36,4 +37,5 @@ tempfile = "3"
 # Internal crates
 openprod-core = { path = "crates/core" }
 openprod-storage = { path = "crates/storage" }
+openprod-engine = { path = "crates/engine" }
 openprod-harness = { path = "crates/harness" }

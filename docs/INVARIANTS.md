@@ -117,6 +117,13 @@ This document defines the rules that must always hold true, regardless of implem
 - Overlays persist across restarts; no auto-resume on startup
 - Committing overlay that touches conflicted field resolves the conflict
 - Display priority: overlay > canonical (overlay values shown when active)
+- Overlay commit is atomic (wrapped in BEGIN IMMEDIATE / COMMIT transaction)
+- Overlay deactivated before commit to prevent `execute_internal` re-routing ops back into the overlay
+- `scan_overlay_drift` called from both `ingest_bundle` and `commit_overlay` for cross-overlay drift detection
+- Commit blocked if unresolved drift exists (`UnresolvedDrift` error)
+- ClearField uses tombstones (value=NULL + LWW guard) for correct out-of-order sync ingestion
+- ClearEdgeProperty uses tombstones (value=NULL + LWW guard) for correct out-of-order sync ingestion
+- Overlay undo/redo is per-overlay and non-persistent (in-memory, cleared on overlay switch or restart)
 
 ---
 
@@ -301,6 +308,8 @@ The expression language is deferred to post-v1. The anchor invariant below will 
 - Conflict resolution requires `can_edit` permission on the field (post-v1; no permission enforcement in V1)
 - At most one resolution per conflict state
 - Resolution is immutable once recorded; revision creates new operation
+- Conflict branch tips stored exclusively in `conflict_values` table (keyed by `conflict_id, actor_id`), not inline on `ConflictRecord`
+- `add_conflict_value` upserts by actor (ON CONFLICT DO UPDATE) for N-way extension
 
 ### Late-Arriving Edits
 
@@ -364,7 +373,7 @@ V1 supports two sync modes, both using the same underlying oplog-based protocol:
 
 - Local-first: all data lives on device, always works offline
 - Oplog-based sync: "send me all ops I don't have"
-- Deterministic ordering via HLC + hash tiebreaker
+- Deterministic ordering via HLC + op_id tiebreaker (LWW: HLC comparison first, then op_id for deterministic total ordering)
 - Strong eventual consistency (SEC)
 - Partitions are implicit; no ceremony to enter or exit
 - Multi-partition merge via pairwise gossip (no special N-way protocol needed)
@@ -451,7 +460,7 @@ Permissions and role-based access control are deferred to post-v1. In V1, there 
 | Overlays local-only, never synced | Decided | High |
 | Scripts in Lua 5.4, async via coroutines | Decided | High |
 | Scripts subject to normal conflict detection | Decided | High |
-| Deterministic ordering via HLC + tiebreaker | Decided | High |
+| Deterministic ordering via HLC + op_id tiebreaker | Decided | High |
 | HLC format: 12-byte (8 wall + 4 counter), no node ID | Decided | High |
 | HLC future drift: reject >5min, don't poison local | Decided | High |
 | HLC stale ops: accept but flag for review >7 days | Decided | High |

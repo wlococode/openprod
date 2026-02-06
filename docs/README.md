@@ -32,35 +32,33 @@ The [spec/](spec/README.md) directory contains modular implementation specificat
 | Spec | Subsystem |
 |------|-----------|
 | [data-model.md](spec/data-model.md) | Entities, fields, facets, edges |
-| [operations.md](spec/operations.md) | Oplog, bundles, HLC timestamps |
-| [snapshots.md](spec/snapshots.md) | Snapshots, segments, archiving, GC |
-| [sync.md](spec/sync.md) | Replication, leader election, partitions |
+| [operations.md](spec/operations.md) | Oplog, bundles, operation types |
+| [identity.md](spec/identity.md) | Actors, Ed25519 signing, permissions |
+| [hlc.md](spec/hlc.md) | Hybrid Logical Clock timestamps |
+| [sqlite-schema.md](spec/sqlite-schema.md) | SQLite table definitions, indexes |
+| [conflicts.md](spec/conflicts.md) | Detection, resolution, convergence |
+| [crdt.md](spec/crdt.md) | CRDT field semantics |
+| [ordered-edges.md](spec/ordered-edges.md) | Ordered edge positioning |
 | [overlays.md](spec/overlays.md) | Staging, transport router, canonical drift |
-| [proposals.md](spec/proposals.md) | Lifecycle, acceptance, bundled proposals |
-| [conflicts.md](spec/conflicts.md) | Detection, resolution, GC |
+| [sync.md](spec/sync.md) | Replication, leader election, partitions |
 | [rules.md](spec/rules.md) | Facet attachment, matching, derived fields |
 | [scripts.md](spec/scripts.md) | Lua API, sessions, triggers, capabilities |
 | [modules.md](spec/modules.md) | Schema, capabilities, views, scripts |
-| [schema-evolution.md](spec/schema-evolution.md) | Versioning, migrations |
-| [identity.md](spec/identity.md) | Actors, signing, permissions, roles |
+| [query-language.md](spec/query-language.md) | Query syntax and semantics |
 | [workspace.md](spec/workspace.md) | Lifecycle, join modes, forks, recovery |
 
 ---
 
 ## Project Status
 
-**Current phase:** Design with rough prototype. Core ideas are proven but implementation needs work.
+**Phase 1 complete** (Feb 2026): core, storage, and harness crates implemented with 37+ passing tests. Core operations, oplog, bundles, HLC, Ed25519 signing, SQLite materialization, and vector clocks are working.
 
-**What exists:** Working HLC/sync/module loading, relationships, queries. Messy but demonstrates feasibility.
+**Phase 2 in progress:** Engine crate with command/query separation, undo/redo, and state rebuild.
 
-**What's needed:** Clean implementation of the core, especially peer-to-peer replication.
+**What's next:** Conflict detection, overlays, sync, rules engine, scripting.
 
 ---
 
 ## Open Questions
 
-These areas need further design work:
-
-1. **Proposal workflows** — Expiration policies, notification model, dependencies
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for full context on open questions.
+See [plans/open-topics.md](plans/open-topics.md) for deferred design topics and [ARCHITECTURE.md](ARCHITECTURE.md) for full context.

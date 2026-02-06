@@ -14,6 +14,9 @@ pub enum CoreError {
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
 
+    #[error("HLC counter overflow")]
+    HlcCounterOverflow,
+
     #[error("invalid data: {0}")]
     InvalidData(String),
 }

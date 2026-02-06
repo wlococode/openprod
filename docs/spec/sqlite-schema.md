@@ -17,7 +17,7 @@ All tables -- both canonical (synced) and local-only (never synced) -- live in t
 | Scope | Tables | Syncs to Peers |
 |-------|--------|----------------|
 | Canonical | oplog, bundles, entities, fields, edges, facets, blobs, conflicts, tables, table memberships, rules, scripts, triggers, actors, workspace config, modules | Yes |
-| Local-only | overlays, overlay_ops, sync_state, local_vector_clock, peer_info, module_local_data, stale_operation_flags, awareness_events, rule/trigger dependencies, execution state | No |
+| Local-only | overlays, overlay_ops, sync_state, vector_clock, peer_info, module_local_data, stale_operation_flags, awareness_events, rule/trigger dependencies, execution state | No |
 
 **Rationale for single database:**
 - Simpler implementation: one connection, one WAL, one backup
@@ -53,8 +53,6 @@ PRAGMA mmap_size = 268435456;
 -- Busy timeout for concurrent access (5 seconds)
 PRAGMA busy_timeout = 5000;
 
--- Enable strict mode for type checking
-PRAGMA strict = ON;
 ```
 
 ### WAL Mode Rationale
@@ -88,16 +86,19 @@ CREATE TABLE oplog (
     hlc BLOB NOT NULL CHECK (length(hlc) = 12),             -- HLC timestamp (12 bytes, see hlc.md)
 
     -- Bundle membership
-    bundle_id BLOB NOT NULL,              -- UUID (16 bytes)
+    bundle_id BLOB NOT NULL CHECK (length(bundle_id) = 16), -- UUID (16 bytes)
 
     -- Operation content (MessagePack encoded)
     payload BLOB NOT NULL,
 
+    -- Module schema versions at creation time (MessagePack map)
+    module_versions BLOB NOT NULL,
+
     -- Signature for verification
-    signature BLOB NOT NULL,              -- Ed25519 signature (64 bytes)
+    signature BLOB NOT NULL CHECK (length(signature) = 64),  -- Ed25519 signature (64 bytes)
 
     -- Denormalized for efficient queries
-    op_type TEXT NOT NULL,                -- 'set_field', 'attach_facet', etc.
+    op_type TEXT NOT NULL,                -- 'CreateEntity', 'SetField', etc.
     entity_id BLOB,                       -- Target entity (if applicable)
 
     -- Timestamps for debugging (not authoritative)
@@ -134,6 +135,12 @@ CREATE TABLE bundles (
     hlc BLOB NOT NULL CHECK (length(hlc) = 12),                 -- Bundle timestamp (max HLC of ops)
     bundle_type INTEGER NOT NULL,         -- 1=user_edit, 2=script_output, etc.
 
+    -- Operation count for integrity
+    op_count INTEGER NOT NULL,
+
+    -- Integrity checksum (BLAKE3 hash of all operation payloads)
+    checksum BLOB NOT NULL CHECK (length(checksum) = 32),
+
     -- Entity lifecycle markers (MessagePack arrays of UUIDs)
     creates BLOB,                         -- Entities created in this bundle
     deletes BLOB,                         -- Entities deleted in this bundle
@@ -142,10 +149,10 @@ CREATE TABLE bundles (
     meta BLOB,
 
     -- Bundle signature
-    signature BLOB NOT NULL,
+    signature BLOB NOT NULL CHECK (length(signature) = 64),  -- Ed25519 signature (64 bytes)
 
-    -- Operation count for integrity
-    op_count INTEGER NOT NULL,
+    -- Creator's vector clock at bundle creation time (MessagePack encoded, nullable)
+    creator_vector_clock BLOB,
 
     -- Reception timestamp
     received_at INTEGER NOT NULL DEFAULT (unixepoch('now', 'subsec') * 1000)
@@ -216,8 +223,8 @@ CREATE TABLE fields (
     entity_id BLOB NOT NULL,
     field_key TEXT NOT NULL,              -- Shared key or namespaced (module.field)
 
-    -- Current value (MessagePack encoded)
-    value BLOB NOT NULL,
+    -- Current value (MessagePack encoded; NULL = tombstone from ClearField)
+    value BLOB,
 
     -- Provenance
     source_op BLOB NOT NULL,              -- Operation that set this value
@@ -273,9 +280,6 @@ CREATE TABLE edges (
     source_id BLOB NOT NULL,              -- Source entity
     target_id BLOB NOT NULL,              -- Target entity
 
-    -- Edge properties (MessagePack map)
-    properties BLOB,
-
     -- Provenance
     created_at BLOB NOT NULL CHECK (length(created_at) = 12),  -- HLC of creation
     created_by BLOB NOT NULL CHECK (length(created_by) = 32),  -- Actor who created
@@ -310,19 +314,41 @@ CREATE INDEX idx_edges_deleted ON edges (deleted_in_bundle) WHERE deleted_at IS 
 - `idx_edges_type`: Global edge type queries
 - `idx_edges_deleted`: Undo cascade restoration
 
+### edge_properties Table
+
+Per-property storage for edge properties. Mirrors the `fields` table pattern.
+
+```sql
+CREATE TABLE edge_properties (
+    edge_id       BLOB NOT NULL CHECK(length(edge_id) = 16),
+    property_key  TEXT NOT NULL,
+    value         BLOB,
+    source_op     BLOB NOT NULL CHECK(length(source_op) = 16),
+    source_actor  BLOB NOT NULL CHECK(length(source_actor) = 32),
+    updated_at    BLOB NOT NULL CHECK(length(updated_at) = 12),
+    PRIMARY KEY (edge_id, property_key),
+    FOREIGN KEY (edge_id) REFERENCES edges(edge_id)
+);
+
+-- Find properties by source (for undo, attribution)
+CREATE INDEX idx_edge_properties_source_op ON edge_properties (source_op);
+```
+
+**Index justifications:**
+- Primary key covers edge property lookups
+- `idx_edge_properties_source_op`: Undo operations, attribution queries
+
 **Ordered edges:**
 
 Edge types with `ordered: true` store a `_position` property for deterministic ordering:
 
 ```yaml
-# properties column for ordered edges (MessagePack)
-{
-  "call_text": "GO",
-  "_position": "Pm3xK"    # Lexicographically sortable position identifier
-}
+# edge_properties rows for an ordered edge:
+(edge_id, "call_text", "GO")
+(edge_id, "_position", "Pm3xK")    # Lexicographically sortable position identifier
 ```
 
-Ordered edges are queried by `(target_id, edge_type)` and sorted by `_position`. The existing `idx_edges_target` index supports this query pattern; application code extracts and sorts by `_position` from properties.
+Ordered edges are queried by `(target_id, edge_type)` and sorted by `_position`. The existing `idx_edges_target` index supports this query pattern; application code reads `_position` from the `edge_properties` table and sorts.
 
 See [ordered-edges.md](ordered-edges.md) for ordered edge semantics.
 
@@ -610,18 +636,18 @@ Staging overlay metadata. See [overlays.md](overlays.md).
 
 ```sql
 CREATE TABLE overlays (
-    overlay_id BLOB PRIMARY KEY,          -- UUID
+    overlay_id BLOB PRIMARY KEY CHECK (length(overlay_id) = 16),  -- UUID (16 bytes)
     display_name TEXT NOT NULL,
     source TEXT NOT NULL,                 -- 'user' or 'script'
-    source_id BLOB NOT NULL,              -- Actor ID or script execution ID
+    source_id TEXT,                       -- Actor ID or script execution ID (nullable)
     status TEXT NOT NULL,                 -- 'active', 'stashed', 'committed', 'discarded'
 
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
+    created_at BLOB NOT NULL CHECK (length(created_at) = 12),  -- HLC timestamp (12 bytes)
+    updated_at BLOB NOT NULL CHECK (length(updated_at) = 12),  -- HLC timestamp (12 bytes)
 
     -- For script overlays
     script_id TEXT,                       -- Script identifier (module.script_name)
-    script_execution_id BLOB,             -- Unique execution instance ID
+    script_execution_id TEXT,             -- Unique execution instance ID
 
     -- Metadata (MessagePack map)
     meta BLOB
@@ -650,8 +676,9 @@ CREATE TABLE overlay_ops (
     -- Operation content (MessagePack encoded)
     payload BLOB NOT NULL,
 
-    -- Target entity
-    entity_id BLOB,
+    -- Target entity, field, and type (denormalized for drift queries)
+    entity_id BLOB CHECK (entity_id IS NULL OR length(entity_id) = 16),
+    field_key TEXT,                        -- Denormalized field key (NULL for non-field ops)
     op_type TEXT NOT NULL,
 
     -- Canonical drift tracking
@@ -664,8 +691,8 @@ CREATE TABLE overlay_ops (
 -- Find ops in an overlay (in order)
 CREATE INDEX idx_overlay_ops_overlay ON overlay_ops (overlay_id, rowid);
 
--- Find overlay ops affecting an entity
-CREATE INDEX idx_overlay_ops_entity ON overlay_ops (entity_id) WHERE entity_id IS NOT NULL;
+-- Find overlay ops by entity and field (drift queries, field lookups)
+CREATE INDEX idx_overlay_ops_entity ON overlay_ops (overlay_id, entity_id, field_key);
 ```
 
 ### sync_state Table
@@ -692,17 +719,18 @@ CREATE TABLE sync_state (
 CREATE INDEX idx_sync_state_peer ON sync_state (peer_id, last_sync_at);
 ```
 
-### local_vector_clock Table
+### vector_clock Table
 
 Our local vector clock (what we've seen from each actor).
 
 ```sql
-CREATE TABLE local_vector_clock (
+CREATE TABLE vector_clock (
     actor_id BLOB PRIMARY KEY CHECK (length(actor_id) = 32),  -- Actor (Ed25519 public key)
-    last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 12),     -- Last HLC we've integrated from this actor
-    op_count INTEGER NOT NULL DEFAULT 0                        -- Total ops from this actor
+    max_hlc BLOB NOT NULL CHECK (length(max_hlc) = 12)        -- Max HLC we've integrated from this actor
 );
 ```
+
+**Note:** An `op_count` column for per-actor operation counting is deferred to a future iteration.
 
 ### peer_info Table
 
@@ -792,9 +820,8 @@ CREATE INDEX idx_stale_flags_bundle ON stale_operation_flags (bundle_id) WHERE s
 
 ```sql
 CREATE TABLE schema_version (
-    db_name TEXT PRIMARY KEY,             -- 'oplog'
-    version INTEGER NOT NULL,
-    migrated_at INTEGER NOT NULL
+    version INTEGER PRIMARY KEY,
+    applied_at INTEGER NOT NULL
 );
 ```
 
@@ -816,8 +843,8 @@ ALTER TABLE entities ADD COLUMN archived_at BLOB;
 -- Create new index
 CREATE INDEX idx_entities_archived ON entities (archived_at) WHERE archived_at IS NOT NULL;
 
--- Update version
-UPDATE schema_version SET version = 2, migrated_at = unixepoch('now') WHERE db_name = 'oplog';
+-- Record new version
+INSERT INTO schema_version (version, applied_at) VALUES (2, unixepoch());
 
 COMMIT;
 ```
@@ -862,6 +889,7 @@ entities.entity_id <-- edges.source_id
 entities.entity_id <-- edges.target_id
 bundles.bundle_id <-- edges.created_in_bundle
 bundles.bundle_id <-- edges.deleted_in_bundle
+edges.edge_id <-- edge_properties.edge_id
 entities.entity_id <-- facets.entity_id
 bundles.bundle_id <-- facets.attached_in_bundle
 bundles.bundle_id <-- facets.detached_in_bundle
@@ -869,11 +897,9 @@ overlays.overlay_id <-- overlay_ops.overlay_id (CASCADE DELETE)
 
 -- Conflicts
 entities.entity_id <-- conflicts.entity_id
-oplog.op_id <-- conflicts.op_id_1
-oplog.op_id <-- conflicts.op_id_2
-oplog.op_id <-- conflicts.resolution_op_id
+oplog.op_id <-- conflicts.resolved_op_id
 bundles.bundle_id <-- conflicts.detected_in_bundle
-conflicts.conflict_id <-- conflict_values.conflict_id (CASCADE DELETE)
+conflicts.conflict_id <-- conflict_values.conflict_id
 oplog.op_id <-- conflict_values.op_id
 
 -- Table model
@@ -931,12 +957,13 @@ bundles.bundle_id <-- custom_shared_keys.created_in_bundle
 | entities | entity_id |
 | fields | (entity_id, field_key) |
 | edges | edge_id |
+| edge_properties | (edge_id, property_key) |
 | facets | (entity_id, facet_type) |
 | blobs | blob_hash |
 | local_oplog | op_id |
 | overlays | overlay_id |
 | conflicts | conflict_id |
-| conflict_values | (conflict_id, value_index) |
+| conflict_values | (conflict_id, actor_id) |
 | tables | table_id |
 | table_memberships | (entity_id, table_id) |
 | table_links | (table_a_id, table_b_id) |
@@ -1072,7 +1099,7 @@ PRAGMA optimize;
 
 ### conflicts Table
 
-Field-level conflicts with audit trail. See [conflicts.md](conflicts.md).
+Field-level conflict metadata with audit trail. See [conflicts.md](conflicts.md). Competing values are stored exclusively in `conflict_values`.
 
 ```sql
 CREATE TABLE conflicts (
@@ -1081,17 +1108,6 @@ CREATE TABLE conflicts (
     field_key TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',  -- 'open', 'resolved'
 
-    -- Competing values (first two; see conflict_values for N-way)
-    value_1 BLOB NOT NULL,
-    actor_1 BLOB NOT NULL CHECK (length(actor_1) = 32),
-    hlc_1 BLOB NOT NULL CHECK (length(hlc_1) = 12),
-    op_id_1 BLOB NOT NULL,
-
-    value_2 BLOB NOT NULL,
-    actor_2 BLOB NOT NULL CHECK (length(actor_2) = 32),
-    hlc_2 BLOB NOT NULL CHECK (length(hlc_2) = 12),
-    op_id_2 BLOB NOT NULL,
-
     -- Detection
     detected_at BLOB NOT NULL CHECK (length(detected_at) = 12),
     detected_in_bundle BLOB NOT NULL,
@@ -1099,17 +1115,15 @@ CREATE TABLE conflicts (
     -- Resolution
     resolved_at BLOB CHECK (resolved_at IS NULL OR length(resolved_at) = 12),
     resolved_by BLOB CHECK (resolved_by IS NULL OR length(resolved_by) = 32),
+    resolved_op_id BLOB,
     resolved_value BLOB,
-    resolution_op_id BLOB,
 
     -- Late-arriving reopening
     reopened_at BLOB CHECK (reopened_at IS NULL OR length(reopened_at) = 12),
     reopened_by_op BLOB,
 
     FOREIGN KEY (entity_id) REFERENCES entities(entity_id),
-    FOREIGN KEY (op_id_1) REFERENCES oplog(op_id),
-    FOREIGN KEY (op_id_2) REFERENCES oplog(op_id),
-    FOREIGN KEY (resolution_op_id) REFERENCES oplog(op_id),
+    FOREIGN KEY (resolved_op_id) REFERENCES oplog(op_id),
     FOREIGN KEY (detected_in_bundle) REFERENCES bundles(bundle_id)
 );
 
@@ -1123,19 +1137,18 @@ CREATE INDEX idx_conflicts_entity ON conflicts (entity_id);
 
 ### conflict_values Table
 
-Additional values for N-way conflicts (3+ competing values). Values 1 and 2 are stored inline in the conflicts table.
+All competing values for a conflict, keyed by `(conflict_id, actor_id)`. This is the sole location for branch tip values — the conflicts table stores only metadata. Supports N-way conflicts (2+ concurrent edits).
 
 ```sql
 CREATE TABLE conflict_values (
     conflict_id BLOB NOT NULL,
-    value_index INTEGER NOT NULL,  -- 3, 4, 5... (1 and 2 in conflicts table)
-    value BLOB NOT NULL,
     actor_id BLOB NOT NULL CHECK (length(actor_id) = 32),
     hlc BLOB NOT NULL CHECK (length(hlc) = 12),
     op_id BLOB NOT NULL,
+    value BLOB,
 
-    PRIMARY KEY (conflict_id, value_index),
-    FOREIGN KEY (conflict_id) REFERENCES conflicts(conflict_id) ON DELETE CASCADE,
+    PRIMARY KEY (conflict_id, actor_id),
+    FOREIGN KEY (conflict_id) REFERENCES conflicts(conflict_id),
     FOREIGN KEY (op_id) REFERENCES oplog(op_id)
 );
 ```

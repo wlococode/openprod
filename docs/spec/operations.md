@@ -83,16 +83,34 @@ Bulk operations are collections of changes applied atomically as a single bundle
 
 | Operation | Description |
 |-----------|-------------|
-| `CreateEntity` | Create a new entity |
+| `CreateEntity` | Create a new entity (with optional initial table) |
 | `DeleteEntity` | Delete an entity (cascades to edges) |
+| `RestoreEntity` | Restore a soft-deleted entity |
+| `MergeEntities` | Merge two entities (identity repair) |
+| `SplitEntity` | Split an entity into two (identity repair) |
 | `SetField` | Set a field value on an entity (non-CRDT fields only) |
 | `ClearField` | Clear a field value on an entity |
-| `ApplyCRDT` | Apply a delta to a CRDT field |
-| `CreateEdge` | Create a relationship between entities |
+| `ApplyCrdt` | Apply a delta to a CRDT field |
+| `ClearAndAdd` | Reset a CRDT set field to specific values |
+| `AttachFacet` | Attach a facet to an entity |
+| `DetachFacet` | Detach a facet from an entity (optionally preserving values) |
+| `RestoreFacet` | Restore a detached facet with preserved values |
+| `CreateEdge` | Create a relationship between entities (with optional initial properties) |
 | `DeleteEdge` | Remove an edge |
+| `RestoreEdge` | Restore a soft-deleted edge |
+| `ResolveConflict` | Resolve a field-level conflict by choosing a value |
+| `SetEdgeProperty` | Set a property value on an edge |
+| `ClearEdgeProperty` | Clear a property value on an edge |
 | `CreateOrderedEdge` | Create an edge with position in an ordered list |
 | `MoveOrderedEdge` | Reorder an existing ordered edge |
-| `RebalanceOrderedEdges` | Recompute positions for an ordered edge set |
+| `LinkTables` | Establish a link between two tables with field mappings |
+| `UnlinkTables` | Remove a table-level link |
+| `AddToTable` | Add an entity to a table (attaches table's facet) |
+| `RemoveFromTable` | Remove an entity from a table (detaches table's facet) |
+| `ConfirmFieldMapping` | Confirm a suggested shared key mapping between tables |
+| `CreateRule` | Create a rule for automatic facet attachment |
+
+**Note:** `AttachFacet`/`DetachFacet` are the low-level primitives. `AddToTable`/`RemoveFromTable` are higher-level operations that map to facet operations internally. `RestoreEntity`/`RestoreEdge`/`RestoreFacet` are used by the undo system to reverse deletions. `CreateEdge.properties` sets initial properties atomically with edge creation (equivalent to N x `SetEdgeProperty` ops in the same bundle). `ResolveConflict` resolves a detected field conflict by choosing a value (see [conflicts.md](conflicts.md)). See [ordered-edges.md](ordered-edges.md) for `RebalanceOrderedEdges` (maintenance operation, not yet implemented).
 
 ### CreateEntity Operation
 
@@ -192,12 +210,12 @@ RemoveFromTable:
 - `preserve`: facet data is soft-deleted (recoverable)
 - `discard`: facet data is permanently removed
 
-### ApplyCRDT Operation
+### ApplyCrdt Operation
 
 Apply a delta update to a CRDT field. See [crdt.md](crdt.md) for CRDT field semantics.
 
 ```yaml
-ApplyCRDT:
+ApplyCrdt:
   op_id: <uuid>
   entity_id: <uuid>
   field: "description"
@@ -218,7 +236,7 @@ ApplyCRDT:
 - Field must be declared with `crdt` attribute in schema
 - `crdt_type` must match schema declaration
 
-**Note:** `SetField` on a CRDT-typed field is a validation/type error and is **rejected** at validation time. CRDT fields must be modified via `ApplyCRDT`. Use `ClearAndAdd` for reset operations on CRDT set fields.
+**Note:** `SetField` on a CRDT-typed field is a validation/type error and is **rejected** at validation time. CRDT fields must be modified via `ApplyCrdt`. Use `ClearAndAdd` for reset operations on CRDT set fields.
 
 ### CreateOrderedEdge Operation
 
@@ -308,6 +326,166 @@ CreateRule:
 - Rule changes are part of the oplog and sync to all peers
 - See [rules.md](rules.md) for rule semantics
 
+### AttachFacet Operation
+
+```yaml
+AttachFacet:
+  entity_id: <uuid>
+  facet_type: "contacts.Contact"
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Attaches a facet (type tag) to an entity
+- This is the low-level primitive underlying `AddToTable`
+- Entity must exist; duplicate attachment is an error
+
+### DetachFacet Operation
+
+```yaml
+DetachFacet:
+  entity_id: <uuid>
+  facet_type: "contacts.Contact"
+  preserve_values: true
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Detaches a facet from an entity
+- `preserve_values: true` stashes field values for potential restoration
+- `preserve_values: false` discards field values
+- This is the low-level primitive underlying `RemoveFromTable`
+
+### RestoreFacet Operation
+
+```yaml
+RestoreFacet:
+  entity_id: <uuid>
+  facet_type: "contacts.Contact"
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Restores a previously detached facet with its preserved values
+- Only valid if the facet was detached with `preserve_values: true`
+- Used by the undo system to reverse `DetachFacet`
+
+### RestoreEntity Operation
+
+```yaml
+RestoreEntity:
+  entity_id: <uuid>
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Restores a soft-deleted entity by clearing its deletion metadata
+- Does **not** cascade to edges — cascade-deleted edges must be restored individually via `RestoreEdge`
+- Used by the undo system to reverse `DeleteEntity`
+
+### RestoreEdge Operation
+
+```yaml
+RestoreEdge:
+  edge_id: <uuid>
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Restores a soft-deleted edge by clearing its deletion metadata
+- Used by the undo system to reverse `DeleteEdge` and cascade-deleted edges
+
+### SetEdgeProperty Operation
+
+```yaml
+SetEdgeProperty:
+  op_id: <uuid>
+  edge_id: <uuid>
+  property_key: "call_text"
+  value: "GO"
+  actor_id: <actor>
+  hlc: <timestamp>
+```
+
+- Sets a typed property value on an existing edge
+- Properties follow the same LWW semantics as entity fields
+- Concurrent `SetEdgeProperty` operations on the same `(edge_id, property_key)` produce a conflict (same rules as `SetField`)
+
+### ClearEdgeProperty Operation
+
+```yaml
+ClearEdgeProperty:
+  op_id: <uuid>
+  edge_id: <uuid>
+  property_key: "call_text"
+  actor_id: <actor>
+  hlc: <timestamp>
+```
+
+- Clears a property value on an existing edge
+- Follows the same tombstone semantics as `ClearField`
+
+### ResolveConflict Operation
+
+```yaml
+ResolveConflict:
+  conflict_id: <uuid>
+  entity_id: <uuid>
+  field_key: "name"
+  chosen_value: "Alice"          # Optional: NULL clears the field
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Resolves a field-level conflict by choosing a value
+- `chosen_value` is `None` to clear the field (equivalent to `ClearField` semantics)
+- The conflict is marked as resolved and the chosen value is applied via `SetField`/`ClearField`
+- See [conflicts.md](conflicts.md) for conflict detection and resolution semantics
+
+### ConfirmFieldMapping Operation
+
+```yaml
+ConfirmFieldMapping:
+  source_table: <table_id>
+  target_table: <table_id>
+  source_field: "contacts.email"
+  target_field: "attendees.email"
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Confirms a suggested shared key mapping between two linked tables
+- See [data-model.md](data-model.md) for the suggested-confirmed field mapping model
+
+### MergeEntities Operation
+
+```yaml
+MergeEntities:
+  survivor: <entity_id>
+  absorbed: <entity_id>
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Merges two entities for identity repair (e.g., duplicate contacts)
+- The absorbed entity is redirected to the survivor
+- See [data-model.md](data-model.md) for merge semantics
+
+### SplitEntity Operation
+
+```yaml
+SplitEntity:
+  source: <entity_id>
+  new_entity: <entity_id>
+  facets: ["lighting.Fixture"]
+  actor: <actor_id>
+  hlc: <timestamp>
+```
+
+- Splits an entity by moving specified facets to a new entity
+- Creates a merge exception to prevent re-merging
+- See [data-model.md](data-model.md) for split semantics
+
 ---
 
 ## Oplog & History
@@ -348,7 +526,7 @@ CreateRule:
 
 **Anchor invariant:** CRDT fields are derived using reception order (not canonical order) because CRDT merge is commutative--order doesn't affect the result.
 
-For CRDT fields, `ApplyCRDT` deltas are merged into the field state. For non-CRDT fields, `SetField` operations use LWW with canonical ordering. See [crdt.md](crdt.md) for details.
+For CRDT fields, `ApplyCrdt` deltas are merged into the field state. For non-CRDT fields, `SetField` operations use LWW with canonical ordering. See [crdt.md](crdt.md) for details.
 
 ---
 

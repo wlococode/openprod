@@ -43,16 +43,16 @@ impl Hlc {
         buf
     }
 
-    pub fn from_bytes(bytes: &[u8; 12]) -> Result<Self, CoreError> {
+    pub fn from_bytes(bytes: &[u8; 12]) -> Self {
         let wall_ms = u64::from_be_bytes(bytes[..8].try_into().unwrap());
         let counter = u32::from_be_bytes(bytes[8..].try_into().unwrap());
-        Ok(Self { wall_ms, counter })
+        Self { wall_ms, counter }
     }
 }
 
 impl Ord for Hlc {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.to_bytes().cmp(&other.to_bytes())
+        self.wall_ms.cmp(&other.wall_ms).then(self.counter.cmp(&other.counter))
     }
 }
 
@@ -74,7 +74,7 @@ impl<'de> Deserialize<'de> for Hlc {
         let arr: [u8; 12] = bytes
             .try_into()
             .map_err(|v: Vec<u8>| serde::de::Error::invalid_length(v.len(), &"12 bytes"))?;
-        Hlc::from_bytes(&arr).map_err(serde::de::Error::custom)
+        Ok(Hlc::from_bytes(&arr))
     }
 }
 
@@ -99,7 +99,8 @@ impl HlcClock {
         let hlc = if now > self.wall_ms {
             Hlc::new(now, 0)
         } else {
-            Hlc::new(self.wall_ms, self.counter + 1)
+            let c = self.counter.checked_add(1).ok_or(CoreError::HlcCounterOverflow)?;
+            Hlc::new(self.wall_ms, c)
         };
 
         self.wall_ms = hlc.wall_ms;
@@ -124,23 +125,31 @@ impl HlcClock {
             Hlc::new(now, 0)
         } else if self.wall_ms == remote.wall_ms && self.wall_ms == now {
             // All three equal
-            Hlc::new(self.wall_ms, self.counter.max(remote.counter) + 1)
+            let c = self.counter.max(remote.counter).checked_add(1)
+                .ok_or(CoreError::HlcCounterOverflow)?;
+            Hlc::new(self.wall_ms, c)
         } else if self.wall_ms == remote.wall_ms {
             // Local and remote tied, both ahead of physical
-            Hlc::new(self.wall_ms, self.counter.max(remote.counter) + 1)
+            let c = self.counter.max(remote.counter).checked_add(1)
+                .ok_or(CoreError::HlcCounterOverflow)?;
+            Hlc::new(self.wall_ms, c)
         } else if self.wall_ms > remote.wall_ms {
             // Local is greatest
+            let c = self.counter.checked_add(1)
+                .ok_or(CoreError::HlcCounterOverflow)?;
             if self.wall_ms == now {
-                Hlc::new(now, self.counter + 1)
+                Hlc::new(now, c)
             } else {
-                Hlc::new(self.wall_ms, self.counter + 1)
+                Hlc::new(self.wall_ms, c)
             }
         } else {
             // Remote is greatest
+            let c = remote.counter.checked_add(1)
+                .ok_or(CoreError::HlcCounterOverflow)?;
             if remote.wall_ms == now {
-                Hlc::new(now, remote.counter + 1)
+                Hlc::new(now, c)
             } else {
-                Hlc::new(remote.wall_ms, remote.counter + 1)
+                Hlc::new(remote.wall_ms, c)
             }
         };
 
@@ -196,7 +205,7 @@ mod tests {
     fn byte_roundtrip() {
         let hlc = Hlc::new(1_700_000_000_000, 42);
         let bytes = hlc.to_bytes();
-        let recovered = Hlc::from_bytes(&bytes).unwrap();
+        let recovered = Hlc::from_bytes(&bytes);
         assert_eq!(hlc, recovered);
     }
 
@@ -223,10 +232,19 @@ mod tests {
     }
 
     #[test]
+    fn msgpack_roundtrip() {
+        let hlc = Hlc::new(1_700_000_000_000, 42);
+        let bytes = rmp_serde::to_vec(&hlc).unwrap();
+        let recovered: Hlc = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(hlc, recovered);
+    }
+
+    #[test]
     fn drift_rejection() {
         let mut clock = HlcClock::new();
         let now = physical_now().unwrap();
-        let remote = Hlc::new(now + MAX_DRIFT_MS + 1, 0);
+        // Use a large margin (10s) to avoid timing races between the two physical_now() calls
+        let remote = Hlc::new(now + MAX_DRIFT_MS + 10_000, 0);
         let result = clock.receive(&remote);
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -236,6 +254,11 @@ mod tests {
             }
             other => panic!("expected HlcDriftTooLarge, got {other:?}"),
         }
+
+        // Verify clock state wasn't poisoned — next tick should be based on physical time
+        let after = clock.tick().unwrap();
+        assert!(after.wall_ms() <= physical_now().unwrap() + 1,
+            "clock should not have been advanced by rejected remote HLC");
     }
 
     #[test]
@@ -249,6 +272,31 @@ mod tests {
         let hlc = result.unwrap();
         // Result should be greater than the remote
         assert!(hlc > remote);
+    }
+
+    #[test]
+    fn counter_overflow_returns_error() {
+        let mut clock = HlcClock::new();
+        let now = physical_now().unwrap();
+        // Remote with max counter value — receive() must not wrap
+        let remote = Hlc::new(now + 1000, u32::MAX);
+        let result = clock.receive(&remote);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::HlcCounterOverflow => {}
+            other => panic!("expected HlcCounterOverflow, got {other:?}"),
+        }
+
+        // tick() overflow: force the clock into a saturated state
+        let mut clock2 = HlcClock::new();
+        clock2.wall_ms = physical_now().unwrap() + 100_000;
+        clock2.counter = u32::MAX;
+        let result = clock2.tick();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            CoreError::HlcCounterOverflow => {}
+            other => panic!("expected HlcCounterOverflow, got {other:?}"),
+        }
     }
 
     #[test]

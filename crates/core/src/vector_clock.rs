@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::hlc::Hlc;
 use crate::ids::ActorId;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VectorClock {
     entries: BTreeMap<ActorId, Hlc>,
 }
@@ -55,6 +55,36 @@ impl VectorClock {
     /// Iterate over all entries.
     pub fn entries(&self) -> &BTreeMap<ActorId, Hlc> {
         &self.entries
+    }
+
+    /// Serialize to msgpack bytes. Entries stored as Vec<(actor_bytes, hlc_bytes)>.
+    pub fn to_msgpack(&self) -> Result<Vec<u8>, crate::CoreError> {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = self
+            .entries
+            .iter()
+            .map(|(actor, hlc)| (actor.as_bytes().to_vec(), hlc.to_bytes().to_vec()))
+            .collect();
+        rmp_serde::to_vec(&pairs).map_err(|e| crate::CoreError::Serialization(e.to_string()))
+    }
+
+    /// Deserialize from msgpack bytes.
+    pub fn from_msgpack(bytes: &[u8]) -> Result<Self, crate::CoreError> {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> =
+            rmp_serde::from_slice(bytes).map_err(|e| crate::CoreError::Serialization(e.to_string()))?;
+        let mut vc = VectorClock::new();
+        for (actor_bytes, hlc_bytes) in pairs {
+            let actor_arr: [u8; 32] = actor_bytes
+                .try_into()
+                .map_err(|_| crate::CoreError::Serialization("invalid actor_id length".into()))?;
+            let hlc_arr: [u8; 12] = hlc_bytes
+                .try_into()
+                .map_err(|_| crate::CoreError::Serialization("invalid hlc length".into()))?;
+            vc.update(
+                crate::ids::ActorId::from_bytes(actor_arr),
+                crate::hlc::Hlc::from_bytes(&hlc_arr),
+            );
+        }
+        Ok(vc)
     }
 }
 

@@ -91,7 +91,7 @@ CRDT merge only applies to the CRDT content itself. Other aspects may still conf
 | CRDT field content | Auto-merged (no conflict) |
 | Concurrent `SetField` on CRDT field | LWW (full state replacement) |
 | Non-CRDT fields on same entity | Normal conflict rules |
-| Non-position edge properties | Normal conflict rules (LWW or surfaced) |
+| Non-position edge properties | Normal conflict rules via `SetEdgeProperty` (LWW or surfaced) |
 | Permissions/metadata | Normal conflict rules |
 
 ### SetField on CRDT Fields

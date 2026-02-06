@@ -2,7 +2,7 @@
 
 This document explains what Openprod does, how it behaves, and why. It's written for stage managers, designers, technicians, and anyone who wants to understand the system without reading code or technical specifications.
 
-**Status:** This document reflects validated architectural decisions through Feb 5, 2026.
+**Status:** This document reflects validated architectural decisions through Feb 6, 2026.
 
 ---
 
@@ -770,4 +770,4 @@ Rules and triggers can automatically modify data -- but only when you've set the
 
 ---
 
-*This document describes the validated behavior of Openprod based on architectural review completed Feb 5, 2026. See ARCHITECTURE.md for technical details and INVARIANTS.md for formal specifications.*
+*This document describes the validated behavior of Openprod based on architectural review completed Feb 6, 2026. See ARCHITECTURE.md for technical details and INVARIANTS.md for formal specifications.*

@@ -244,6 +244,9 @@ item_type = "string"
 | `shared_key`   | string  | No       | Suggested shared key mapping (see below)            |
 | `crdt`         | string  | No       | CRDT mode: `"text"` or `"list"`                     |
 | `item_type`    | string  | No       | Element type for list fields                        |
+| `on_conflict`  | string  | No       | Display strategy when conflicted: `"lww"` (default) or `"block"` |
+
+Fields with `on_conflict = "block"` display a conflict indicator instead of the LWW value. The `SmartField` component respects this property. The underlying canonical value remains LWW-determined.
 
 ### Inline Schema (Alternative)
 

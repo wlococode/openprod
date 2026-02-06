@@ -345,11 +345,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "openprod-engine"
+version = "0.1.0"
+dependencies = [
+ "openprod-core",
+ "openprod-storage",
+ "thiserror",
+]
+
+[[package]]
 name = "openprod-harness"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "openprod-core",
+ "openprod-engine",
  "openprod-storage",
  "tempfile",
  "uuid",

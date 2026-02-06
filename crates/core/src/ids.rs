@@ -8,6 +8,7 @@ macro_rules! uuid_id {
         pub struct $name(Uuid);
 
         impl $name {
+            #[allow(clippy::new_without_default)]
             pub fn new() -> Self {
                 Self(Uuid::now_v7())
             }
@@ -35,12 +36,6 @@ macro_rules! uuid_id {
             }
         }
 
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}", self.0)
@@ -55,6 +50,8 @@ uuid_id!(BundleId);
 uuid_id!(EdgeId);
 uuid_id!(TableId);
 uuid_id!(RuleId);
+uuid_id!(ConflictId);
+uuid_id!(OverlayId);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ActorId([u8; 32]);

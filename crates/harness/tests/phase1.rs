@@ -4,7 +4,8 @@ use openprod_core::{
     operations::*,
 };
 use openprod_harness::{TestNetwork, TestPeer};
-use openprod_storage::{Storage, StorageError};
+use openprod_engine::EngineError;
+use openprod_storage::StorageError;
 
 // ============================================================================
 // Entity/Field CRUD (7 tests)
@@ -22,21 +23,21 @@ fn create_entity_with_fields() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Verify entity exists
-    let entity = peer.storage.get_entity(entity_id)?;
+    let entity = peer.engine.get_entity(entity_id)?;
     assert!(entity.is_some());
     let entity = entity.unwrap();
     assert_eq!(entity.entity_id, entity_id);
     assert!(!entity.deleted);
 
     // Verify fields match
-    let name = peer.storage.get_field(entity_id, "name")?;
+    let name = peer.engine.get_field(entity_id, "name")?;
     assert_eq!(name, Some(FieldValue::Text("Spotlight".into())));
 
-    let wattage = peer.storage.get_field(entity_id, "wattage")?;
+    let wattage = peer.engine.get_field(entity_id, "wattage")?;
     assert_eq!(wattage, Some(FieldValue::Integer(750)));
 
     // Verify facet attached
-    let facets = peer.storage.get_facets(entity_id)?;
+    let facets = peer.engine.get_facets(entity_id)?;
     assert_eq!(facets.len(), 1);
     assert_eq!(facets[0].facet_type, "Equipment");
     assert!(!facets[0].detached);
@@ -53,14 +54,14 @@ fn update_field_value() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Verify initial value
-    let status = peer.storage.get_field(entity_id, "status")?;
+    let status = peer.engine.get_field(entity_id, "status")?;
     assert_eq!(status, Some(FieldValue::Text("active".into())));
 
     // Update the field
     peer.set_field(entity_id, "status", FieldValue::Text("retired".into()))?;
 
     // Verify updated value
-    let status = peer.storage.get_field(entity_id, "status")?;
+    let status = peer.engine.get_field(entity_id, "status")?;
     assert_eq!(status, Some(FieldValue::Text("retired".into())));
 
     Ok(())
@@ -75,14 +76,14 @@ fn clear_field() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Verify field exists
-    let notes = peer.storage.get_field(entity_id, "notes")?;
+    let notes = peer.engine.get_field(entity_id, "notes")?;
     assert!(notes.is_some());
 
     // Clear the field
     peer.clear_field(entity_id, "notes")?;
 
     // Verify field is None
-    let notes = peer.storage.get_field(entity_id, "notes")?;
+    let notes = peer.engine.get_field(entity_id, "notes")?;
     assert!(notes.is_none());
 
     Ok(())
@@ -94,14 +95,14 @@ fn delete_entity() -> Result<(), Box<dyn std::error::Error>> {
     let entity_id = peer.create_record("Equipment", vec![])?;
 
     // Verify entity exists and is not deleted
-    let entity = peer.storage.get_entity(entity_id)?.unwrap();
+    let entity = peer.engine.get_entity(entity_id)?.unwrap();
     assert!(!entity.deleted);
 
     // Delete the entity
     peer.delete_entity(entity_id)?;
 
     // Verify entity has deleted=true
-    let entity = peer.storage.get_entity(entity_id)?.unwrap();
+    let entity = peer.engine.get_entity(entity_id)?.unwrap();
     assert!(entity.deleted);
 
     Ok(())
@@ -113,7 +114,7 @@ fn detach_facet() -> Result<(), Box<dyn std::error::Error>> {
     let entity_id = peer.create_record("Lighting", vec![])?;
 
     // Verify facet is attached
-    let facets = peer.storage.get_facets(entity_id)?;
+    let facets = peer.engine.get_facets(entity_id)?;
     assert_eq!(facets.len(), 1);
     assert!(!facets[0].detached);
 
@@ -121,7 +122,7 @@ fn detach_facet() -> Result<(), Box<dyn std::error::Error>> {
     peer.detach_facet(entity_id, "Lighting", false)?;
 
     // Verify facet is detached
-    let facets = peer.storage.get_facets(entity_id)?;
+    let facets = peer.engine.get_facets(entity_id)?;
     assert_eq!(facets.len(), 1);
     assert!(facets[0].detached);
 
@@ -140,7 +141,7 @@ fn field_types_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         ("f_null", FieldValue::Null),
         ("f_text", FieldValue::Text("hello".into())),
         ("f_integer", FieldValue::Integer(42)),
-        ("f_float", FieldValue::Float(3.14)),
+        ("f_float", FieldValue::Float(2.72)),
         ("f_boolean", FieldValue::Boolean(true)),
         ("f_timestamp", FieldValue::Timestamp(1700000000000)),
         ("f_entity_ref", FieldValue::EntityRef(ref_entity_id)),
@@ -154,7 +155,7 @@ fn field_types_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify each roundtrips correctly
     for (key, expected) in &test_values {
-        let actual = peer.storage.get_field(entity_id, key)?;
+        let actual = peer.engine.get_field(entity_id, key)?;
         assert!(
             actual.is_some(),
             "field {key} should exist"
@@ -177,12 +178,12 @@ fn query_entities_by_facet() -> Result<(), Box<dyn std::error::Error>> {
     let audio2 = peer.create_record("Audio", vec![("name", FieldValue::Text("Mic 2".into()))])?;
     let _video = peer.create_record("Video", vec![("name", FieldValue::Text("Camera".into()))])?;
 
-    let audio_entities = peer.storage.get_entities_by_facet("Audio")?;
+    let audio_entities = peer.engine.get_entities_by_facet("Audio")?;
     assert_eq!(audio_entities.len(), 2);
     assert!(audio_entities.contains(&audio1));
     assert!(audio_entities.contains(&audio2));
 
-    let video_entities = peer.storage.get_entities_by_facet("Video")?;
+    let video_entities = peer.engine.get_entities_by_facet("Video")?;
     assert_eq!(video_entities.len(), 1);
 
     Ok(())
@@ -202,7 +203,7 @@ fn all_operations_have_valid_signatures() -> Result<(), Box<dyn std::error::Erro
     peer.create_edge("relates_to", entity_a, entity_b)?;
 
     // Get all ops from oplog
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     assert!(!ops.is_empty());
 
     for op in &ops {
@@ -217,7 +218,7 @@ fn tampered_operation_fails_verification() -> Result<(), Box<dyn std::error::Err
     let mut peer = TestPeer::new()?;
     peer.create_record("Test", vec![("key", FieldValue::Text("original".into()))])?;
 
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     // Find a SetField operation to tamper with
     let original_op = ops.iter().find(|op| matches!(&op.payload, OperationPayload::SetField { .. })).unwrap();
 
@@ -255,7 +256,7 @@ fn canonical_ordering_is_deterministic() -> Result<(), Box<dyn std::error::Error
     peer.create_record("Test", vec![])?;
     peer.create_record("Test", vec![])?;
 
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     assert!(ops.len() >= 3);
 
     // Verify they're sorted by (hlc, op_id)
@@ -286,13 +287,13 @@ fn operations_attributed_to_correct_actor() -> Result<(), Box<dyn std::error::Er
     network.peer_mut(idx1).create_record("Test", vec![])?;
 
     // Check peer 0's ops
-    let ops0 = network.peer(idx0).storage.get_ops_canonical()?;
+    let ops0 = network.peer(idx0).engine.get_ops_canonical()?;
     for op in &ops0 {
         assert_eq!(op.actor_id, actor0, "peer 0 ops should have actor0");
     }
 
     // Check peer 1's ops
-    let ops1 = network.peer(idx1).storage.get_ops_canonical()?;
+    let ops1 = network.peer(idx1).engine.get_ops_canonical()?;
     for op in &ops1 {
         assert_eq!(op.actor_id, actor1, "peer 1 ops should have actor1");
     }
@@ -329,7 +330,7 @@ fn bundle_groups_operations() -> Result<(), Box<dyn std::error::Error>> {
         ],
     )?;
 
-    let ops = peer.storage.get_ops_by_bundle(bundle_id)?;
+    let ops = peer.engine.get_ops_by_bundle(bundle_id)?;
     assert_eq!(ops.len(), 3);
 
     Ok(())
@@ -341,14 +342,14 @@ fn operation_count_tracks_correctly() -> Result<(), Box<dyn std::error::Error>> 
 
     // Bundle 1: 1 op
     peer.create_record("Test", vec![])?;
-    assert_eq!(peer.storage.op_count()?, 1);
+    assert_eq!(peer.engine.op_count()?, 1);
 
     // Bundle 2: 2 ops (create + set field)
     peer.create_record("Test", vec![("x", FieldValue::Integer(1))])?;
-    assert_eq!(peer.storage.op_count()?, 3);
+    assert_eq!(peer.engine.op_count()?, 3);
 
     // Bundle 3: 1 op (set field on entity from bundle 1)
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     let first_entity = ops.iter().find_map(|op| {
         if let OperationPayload::CreateEntity { entity_id, .. } = &op.payload {
             Some(*entity_id)
@@ -357,7 +358,7 @@ fn operation_count_tracks_correctly() -> Result<(), Box<dyn std::error::Error>> 
         }
     }).unwrap();
     peer.set_field(first_entity, "y", FieldValue::Integer(2))?;
-    assert_eq!(peer.storage.op_count()?, 4);
+    assert_eq!(peer.engine.op_count()?, 4);
 
     Ok(())
 }
@@ -376,7 +377,7 @@ fn create_and_query_edge() -> Result<(), Box<dyn std::error::Error>> {
     let edge_id = peer.create_edge("relates_to", entity_a, entity_b)?;
 
     // Query edges from A
-    let edges_from_a = peer.storage.get_edges_from(entity_a)?;
+    let edges_from_a = peer.engine.get_edges_from(entity_a)?;
     assert_eq!(edges_from_a.len(), 1);
     assert_eq!(edges_from_a[0].edge_id, edge_id);
     assert_eq!(edges_from_a[0].source_id, entity_a);
@@ -385,7 +386,7 @@ fn create_and_query_edge() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!edges_from_a[0].deleted);
 
     // Query edges to B
-    let edges_to_b = peer.storage.get_edges_to(entity_b)?;
+    let edges_to_b = peer.engine.get_edges_to(entity_b)?;
     assert_eq!(edges_to_b.len(), 1);
     assert_eq!(edges_to_b[0].edge_id, edge_id);
 
@@ -402,7 +403,7 @@ fn delete_edge() -> Result<(), Box<dyn std::error::Error>> {
     let edge_id = peer.create_edge("relates_to", entity_a, entity_b)?;
 
     // Verify edge exists and not deleted
-    let edges = peer.storage.get_edges_from(entity_a)?;
+    let edges = peer.engine.get_edges_from(entity_a)?;
     assert_eq!(edges.len(), 1);
     assert!(!edges[0].deleted);
 
@@ -410,7 +411,7 @@ fn delete_edge() -> Result<(), Box<dyn std::error::Error>> {
     peer.delete_edge(edge_id)?;
 
     // Verify edge has deleted=true
-    let edges = peer.storage.get_edges_from(entity_a)?;
+    let edges = peer.engine.get_edges_from(entity_a)?;
     assert_eq!(edges.len(), 1);
     assert!(edges[0].deleted);
 
@@ -430,10 +431,10 @@ fn delete_entity_cascades_edges() -> Result<(), Box<dyn std::error::Error>> {
     let edge_ca = peer.create_edge("link", entity_c, entity_a)?;
 
     // Verify edges are alive
-    let from_a = peer.storage.get_edges_from(entity_a)?;
+    let from_a = peer.engine.get_edges_from(entity_a)?;
     assert_eq!(from_a.len(), 1);
     assert!(!from_a[0].deleted);
-    let to_a = peer.storage.get_edges_to(entity_a)?;
+    let to_a = peer.engine.get_edges_to(entity_a)?;
     assert_eq!(to_a.len(), 1);
     assert!(!to_a[0].deleted);
 
@@ -441,17 +442,17 @@ fn delete_entity_cascades_edges() -> Result<(), Box<dyn std::error::Error>> {
     peer.delete_entity(entity_a)?;
 
     // Verify entity A is deleted
-    let entity = peer.storage.get_entity(entity_a)?.unwrap();
+    let entity = peer.engine.get_entity(entity_a)?.unwrap();
     assert!(entity.deleted);
 
     // Verify edge A->B is soft-deleted
-    let from_a = peer.storage.get_edges_from(entity_a)?;
+    let from_a = peer.engine.get_edges_from(entity_a)?;
     assert_eq!(from_a.len(), 1);
     assert_eq!(from_a[0].edge_id, edge_ab);
     assert!(from_a[0].deleted);
 
     // Verify edge C->A is soft-deleted
-    let to_a = peer.storage.get_edges_to(entity_a)?;
+    let to_a = peer.engine.get_edges_to(entity_a)?;
     assert_eq!(to_a.len(), 1);
     assert_eq!(to_a[0].edge_id, edge_ca);
     assert!(to_a[0].deleted);
@@ -488,14 +489,17 @@ fn entity_collision_returns_error() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    let storage_err = err.downcast_ref::<StorageError>();
+    let engine_err = err.downcast_ref::<EngineError>();
     assert!(
-        storage_err.is_some(),
-        "error should be StorageError, got: {err}"
+        engine_err.is_some(),
+        "error should be EngineError, got: {err}"
     );
     assert!(
-        matches!(storage_err.unwrap(), StorageError::EntityCollision { .. }),
-        "error should be EntityCollision, got: {storage_err:?}"
+        matches!(
+            engine_err.unwrap(),
+            EngineError::Storage(StorageError::EntityCollision { .. })
+        ),
+        "error should be EngineError::Storage(EntityCollision), got: {engine_err:?}"
     );
 
     Ok(())
@@ -521,12 +525,12 @@ fn vector_clock_reflects_operations() -> Result<(), Box<dyn std::error::Error>> 
     network.peer_mut(idx1).create_record("Test", vec![])?;
 
     // Check peer 0's vector clock
-    let vc0 = network.peer(idx0).storage.get_vector_clock()?;
+    let vc0 = network.peer(idx0).engine.get_vector_clock()?;
     assert!(vc0.get(&actor0).is_some(), "peer 0 vc should contain actor0");
     assert!(vc0.get(&actor1).is_none(), "peer 0 vc should not contain actor1 (no sync)");
 
     // Check peer 1's vector clock
-    let vc1 = network.peer(idx1).storage.get_vector_clock()?;
+    let vc1 = network.peer(idx1).engine.get_vector_clock()?;
     assert!(vc1.get(&actor1).is_some(), "peer 1 vc should contain actor1");
     assert!(vc1.get(&actor0).is_none(), "peer 1 vc should not contain actor0 (no sync)");
 
@@ -543,7 +547,7 @@ fn get_ops_by_actor_after() -> Result<(), Box<dyn std::error::Error>> {
     let _e3 = peer.create_record("Test", vec![])?;
 
     let actor = peer.actor_id();
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     assert_eq!(ops.len(), 3);
 
     // Get the HLC of the 2nd operation (index 1, since they are in order)
@@ -554,7 +558,7 @@ fn get_ops_by_actor_after() -> Result<(), Box<dyn std::error::Error>> {
     let second_hlc = second_op.hlc;
 
     // Query ops after the 2nd op's HLC
-    let after_ops = peer.storage.get_ops_by_actor_after(actor, second_hlc)?;
+    let after_ops = peer.engine.get_ops_by_actor_after(actor, second_hlc)?;
 
     // Should return only the 3rd op
     assert_eq!(after_ops.len(), 1, "should only return ops after the 2nd HLC");
@@ -573,16 +577,16 @@ fn multiple_peers_independent() -> Result<(), Box<dyn std::error::Error>> {
     let entity_b = network.peer_mut(idx1).create_record("Test", vec![("name", FieldValue::Text("B".into()))])?;
 
     // Peer 0 should only have entity_a
-    assert!(network.peer(idx0).storage.get_entity(entity_a)?.is_some());
-    assert!(network.peer(idx0).storage.get_entity(entity_b)?.is_none());
+    assert!(network.peer(idx0).engine.get_entity(entity_a)?.is_some());
+    assert!(network.peer(idx0).engine.get_entity(entity_b)?.is_none());
 
     // Peer 1 should only have entity_b
-    assert!(network.peer(idx1).storage.get_entity(entity_b)?.is_some());
-    assert!(network.peer(idx1).storage.get_entity(entity_a)?.is_none());
+    assert!(network.peer(idx1).engine.get_entity(entity_b)?.is_some());
+    assert!(network.peer(idx1).engine.get_entity(entity_a)?.is_none());
 
     // Op counts should be independent
-    let count0 = network.peer(idx0).storage.op_count()?;
-    let count1 = network.peer(idx1).storage.op_count()?;
+    let count0 = network.peer(idx0).engine.op_count()?;
+    let count1 = network.peer(idx1).engine.op_count()?;
     assert_eq!(count0, 2); // CreateEntity + SetField
     assert_eq!(count1, 2); // CreateEntity + SetField
 
@@ -608,7 +612,7 @@ fn detach_facet_preserves_values() -> Result<(), Box<dyn std::error::Error>> {
     peer.detach_facet(entity_id, "Equipment", true)?;
 
     // Verify facet is detached
-    let facets = peer.storage.get_facets(entity_id)?;
+    let facets = peer.engine.get_facets(entity_id)?;
     assert_eq!(facets.len(), 1);
     assert!(facets[0].detached);
 
@@ -616,7 +620,7 @@ fn detach_facet_preserves_values() -> Result<(), Box<dyn std::error::Error>> {
     // that the facet's operation recorded preserve_values=true. Since the storage
     // serializes the current fields into preserve_values BLOB, we can verify
     // through the oplog that the DetachFacet op has preserve_values=true.
-    let ops = peer.storage.get_ops_canonical()?;
+    let ops = peer.engine.get_ops_canonical()?;
     let detach_op = ops.iter().find(|op| {
         matches!(&op.payload, OperationPayload::DetachFacet { preserve_values: true, .. })
     });
@@ -645,7 +649,7 @@ fn bundle_checksum_integrity() -> Result<(), Box<dyn std::error::Error>> {
     let bundle_id = peer.execute_bundle(BundleType::UserEdit, payloads)?;
 
     // Get the operations for this bundle
-    let ops = peer.storage.get_ops_by_bundle(bundle_id)?;
+    let ops = peer.engine.get_ops_by_bundle(bundle_id)?;
     assert_eq!(ops.len(), 2);
 
     // Recompute BLAKE3 checksum of the operation payloads
@@ -665,10 +669,11 @@ fn bundle_checksum_integrity() -> Result<(), Box<dyn std::error::Error>> {
     // checking the checksum matches.
     let test_bundle = Bundle::new_signed(
         bundle_id,
-        &peer.identity,
+        peer.engine.identity(),
         ops[0].hlc,
         BundleType::UserEdit,
         &ops,
+        None,
     )?;
     assert_eq!(test_bundle.checksum, recomputed);
 

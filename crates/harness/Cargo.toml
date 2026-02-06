@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 openprod-core.workspace = true
+openprod-engine.workspace = true
 openprod-storage.workspace = true
 tempfile.workspace = true
 uuid.workspace = true

@@ -53,14 +53,14 @@ Every operation is signed with the actor's Ed25519 private key before it is writ
 
 ### Signing Process
 
-1. Construct the signing payload: concatenate `id + actor_id + hlc + payload` (canonical byte representation)
+1. Construct the signing payload: concatenate `id + actor_id + hlc + module_versions + payload` (canonical byte representation)
 2. Sign the payload with the actor's Ed25519 private key
 3. Attach the 64-byte signature to the operation
 
 ### Verification Process
 
 1. Extract the `actor_id` (public key) from the operation
-2. Reconstruct the signing payload from `id + actor_id + hlc + payload`
+2. Reconstruct the signing payload from `id + actor_id + hlc + module_versions + payload`
 3. Verify the Ed25519 signature against the public key
 4. Reject the operation if verification fails
 
@@ -82,7 +82,7 @@ Operation:
   actor_id: <Ed25519 public key>
   hlc: <HLC timestamp>
   payload: { ... }
-  signature: <Ed25519 signature of (id + actor_id + hlc + payload)>
+  signature: <Ed25519 signature of (id + actor_id + hlc + module_versions + payload)>
 ```
 
 The actor ID is written at operation creation time and is immutable. The signature proves that the holder of the corresponding private key authored the operation. This enables audit, conflict attribution, display purposes, and tamper detection.

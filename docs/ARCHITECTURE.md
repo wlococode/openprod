@@ -468,11 +468,14 @@ These areas still need input:
 
 ## Project Status
 
-**Where we are:** Design phase with a rough prototype. The prototype proves the core ideas work, but it's not anywhere near production-ready.
+**Where we are:** Core implementation through Phase 3 (Feb 2026). The foundational engine is functional with 127 passing tests.
 
-**What exists:** A working-ish implementation of HLC/sync/module loading, relationships, queries. It's messy and needs rewriting, but it demonstrates feasibility.
+**What exists:**
+- **Phase 1** -- Core types (IDs, HLC, Ed25519, FieldValue, VectorClock), SQLite storage layer, oplog with signed bundles, entity/facet/edge CRUD, signature verification
+- **Phase 2** -- Engine crate with typed commands, undo/redo with conflict detection, state rebuild from oplog, edge properties (typed per-property storage with LWW)
+- **Phase 3** -- Overlay lifecycle (create/stash/activate/discard/commit), canonical drift detection, N-way conflict detection and resolution, LWW tiebreaking (HLC then op_id), TestNetwork sync harness
 
-**What's needed:** Help finalizing the architecture, especially around LAN sync and the rules engine. Then: a clean implementation of the core.
+**What's next:** Schema enforcement, sync transport, rules engine, Lua scripting, UI layer.
 
 ---
 

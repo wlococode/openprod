@@ -112,6 +112,8 @@ function receive(state, physical_now, remote_hlc, max_drift):
     return Ok(())
 ```
 
+**Implementation note:** The implementation uses refined sub-cases that correctly handle when physical time equals the winning wall clock value. For example, when the local or remote wall time is the greatest but ties with physical time, the counter is still incremented rather than reset to zero. This is a safe enhancement over the base pseudocode — it preserves monotonicity in edge cases where the simplified algorithm could produce a duplicate timestamp.
+
 **Key property:** The local HLC is never set to a value beyond `physical_now + max_drift`. This prevents clock poisoning.
 
 ---

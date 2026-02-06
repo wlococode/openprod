@@ -1,0 +1,9 @@
+[package]
+name = "openprod-engine"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+openprod-core.workspace = true
+openprod-storage.workspace = true
+thiserror.workspace = true
