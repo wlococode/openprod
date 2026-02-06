@@ -29,13 +29,13 @@ Live entertainment is a fascinating intersection of art and technology, but the 
 
 ## The Vision
 
-Openprod is a collaboration system for production teams. The core handles storage, syncing, and conflict resolution. Plugins provide the actual functionality—contacts, schedules, cue sheets, paperwork layouts.
+Openprod is a collaboration system for production teams. The core handles storage, syncing, and conflict resolution. Modules provide the actual functionality—contacts, schedules, cue sheets, paperwork layouts.
 
 The key insight: most production paperwork is _derived_ from the same underlying information in a pretty deterministic way. If the data lives in one place and relationships are explicit, everything can stay in sync automatically.
 
 A stage manager shouldn't have to think "what time is this person's first call?" for every company member. The system knows who's in which scenes/segments. It knows the schedule. The call time is a query, not a calculation someone does by hand.
 
-**Think:** Obsidian's plugin model meets Git's offline-first collaboration, built for production workflows.
+**Think:** Obsidian's module model meets Git's offline-first collaboration, built for production workflows.
 
 ---
 
@@ -47,11 +47,11 @@ These guide every design decision:
 
 2. **Deterministic and auditable.** Every change is recorded. History is replayable. You can always see what changed, when, and by whom.
 
-3. **Explicit over implicit.** The system never mutates data on its own. All changes come from user actions or explicitly-triggered jobs. No surprise behavior.
+3. **Explicit over implicit.** All automated mutations are user-configured, visible, and auditable. Every automated action can be traced to a rule or trigger that the user explicitly created or approved. No automation runs without user consent.
 
-4. **Domain-agnostic core.** The core knows about entities, relationships, and sync—not about lighting cues or call times. All domain knowledge lives in plugins.
+4. **Domain-agnostic core.** The core knows about entities, relationships, and sync—not about lighting cues or call times. All domain knowledge lives in modules.
 
-5. **Plugins are independent.** Each plugin must be useful on its own. Interoperability between plugins is opt-in, not assumed.
+5. **Modules are independent.** Each module must be useful on its own. Interoperability between modules is opt-in, not assumed.
 
 6. **Safety over convenience.** When there's a conflict, surface it for human resolution. Never silently overwrite someone's work.
 
@@ -62,142 +62,136 @@ These guide every design decision:
 The core handles:
 
 - **Storage** — Entity/facet/edge graph in SQLite (WAL mode), asset blobs on disk
-- **Sync** — Peer-to-peer replication with leader election, network partition tolerance
+- **Sync** — LAN discovery and offline modes — all oplog-based (cloud sync is post-v1)
 - **History** — Append-only operation log with hybrid logical clocks
-- **Identity** — Entity merging, deduplication, cross-plugin references via Concepts
+- **Tables & Field Mappings** — User-facing data model backed by entity/facet internals
 - **Conflicts** — Detection, human-readable presentation, reversible resolution
 - **Overlays** — Staging areas for safe experimentation and preview
-- **Proposals** — Non-authoritative suggested changes visible to collaborators
-- **Transform Bindings** — Explicit automation rules that emit auditable operations
-- **Plugins** — Schema registration, capability enforcement, cross-plugin bindings
-- **Queries** — Declarative queries that respect bindings, overlays, and permissions
+- **Scripts** — User and module automation that emits auditable operations
+- **Rules** — Query-to-action automation scoped to tables
+- **Modules** — Schema registration, capability enforcement, cross-module bindings
+- **Queries** — Declarative queries that respect mappings and overlays
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Interface                          │
-│                   (Plugin-provided views)                       │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                        Plugin Runtime                           │
-│             Schema · Views · Jobs · Capabilities                │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                            Core                                 │
-│   Storage · Sync · Oplog · Identity · Conflicts · Queries       │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                   SQLite + Blob Storage                         │
-└─────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------+
+|                         User Interface                          |
+|                   (Module-provided views)                       |
++-----------------------------------------------------------------+
+                                |
++-----------------------------------------------------------------+
+|                        Module Runtime                           |
+|         Tables · Views · Scripts · Smart Fields                 |
++-----------------------------------------------------------------+
+                                |
++-----------------------------------------------------------------+
+|                            Core                                 |
+|   Entity/Facet · Sync · Oplog · Conflicts · Rules              |
++-----------------------------------------------------------------+
+                                |
++-----------------------------------------------------------------+
+|                   SQLite + Blob Storage                         |
++-----------------------------------------------------------------+
 ```
 
 ---
 
 ## Data Model
 
-### Entity–Facet–Edge
+### What Users See: Tables, Records, and Fields
 
-The core uses a graph-based data model:
+Users interact with **tables**. Modules declare tables with schemas. A table is a named collection of records with typed fields — concepts people already know from Excel, FileMaker, and Lightwright.
+
+| User/developer sees | System does internally |
+|---|---|
+| "Create a contact" | Create entity, attach Contact facet |
+| "My contacts table" | Query: all entities with Contact facet |
+| "Link attendees to contacts" | Map fields, attach Attendee facet to matching entities |
+| "Jane is in Contacts and Attendees" | One entity, two facets |
+| "Unlink attendees from contacts" | Detach facets, copy data to new standalone entities |
+
+An entity in both the Contacts table and the Attendees table is both a contact and an attendee. There's no single canonical type. Entity "type" is derived from table membership — which facets are attached.
+
+### What the Core Uses: Entities, Facets, and Edges
+
+Under the hood, the system uses an entity/facet model that makes multi-module identity work. This is internal architecture — module developers need to understand it, but end users never see it.
 
 | Term       | Definition                                                                   |
 | ---------- | ---------------------------------------------------------------------------- |
-| **Entity** | A thing: a person, a cue, a prop, a document. Entities have stable IDs.      |
-| **Facet**  | A set of fields attached to an entity by a plugin. Plugins own their facets. |
+| **Entity** | A thing with a stable ID. Just an identifier — all data lives in fields.     |
+| **Facet**  | A module-defined grouping of fields. Attaching a facet adds a record to the corresponding table. |
+| **Field**  | Key-value data attached to an entity. Either shared or namespaced.           |
 | **Edge**   | A relationship between two entities, with optional properties.               |
 
-No plugin owns an entity exclusively. Multiple plugins can attach facets to the same entity.
+No module owns an entity exclusively. Multiple modules can attach facets to the same entity.
 
-### Example: A Person
+### Fields: Shared and Namespaced
 
-```
-Entity: person_jane_doe
-├── Facet: contacts.person
-│   ├── name: "Jane Doe"
-│   ├── email: "jane@example.com"
-│   └── phone: "555-1234"
-├── Facet: crew.member
-│   ├── role: "Stage Manager"
-│   ├── department: "Production"
-│   └── call_time: "18:00"
-└── Edges:
-    ├── assigned_to → show_hamlet
-    └── member_of → department_production
-```
+Fields live at the entity level. Two types of field keys:
 
-The Contacts plugin sees Jane as a contact. The Crew plugin sees her as a crew member. Both are views of the same underlying entity.
+| Type | Format | Example | Behavior |
+|------|--------|---------|----------|
+| **Shared key** | `name` | `name`, `email`, `phone` | Multiple modules can read/write |
+| **Namespaced key** | `module.field` | `casting.agent_contact` | Private to that module |
+
+### Per-Entity Table Membership
+
+Table membership operates at the individual entity level, not just at the table level. This is important for real production scenarios.
+
+**The cue scenario:**
+- LX 11 (lighting cue, called by stage manager) — in both the Lighting Cues table AND the SM Cues table
+- LX 11.1 (lighting cue, auto-follow) — in the Lighting Cues table ONLY
+- SM Cue 15 (sound cue) — in the SM Cues table AND the Sound Cues table, NOT in Lighting Cues
+
+What this means:
+
+- Table-level linking ("all contacts are attendees") is a convenience shortcut
+- Per-entity table membership is the fundamental mechanism
+- Rules can automate per-entity membership: "Cues in Lighting table where `is_called==true` also appear in SM Cues table"
+- Users can manually add/remove individual records from tables
+
+### Separation of Responsibilities
+
+Each layer has a single, clear responsibility:
+
+| Layer               | Responsibility                                                          |
+| ------------------- | ----------------------------------------------------------------------- |
+| **Entities**        | Identity (this is a unique thing)                                       |
+| **Fields**          | Data (shared keys for cross-module, namespaced for module-private)      |
+| **Facets**          | Module-defined field groupings (internal — maps to table membership)    |
+| **Tables**          | User-facing data model (collections of records with schemas)            |
+| **Edges**           | Relationships with properties (how things relate)                       |
+| **Rules**           | Automation (matching, table membership, computed values) scoped to tables |
 
 ---
 
-## Concepts & Bindings
-
-Concepts are the mechanism for unifying identity across plugins while preserving safety, reversibility, auditability, and offline correctness.
-
-**Anchor invariant:** Concept entities own identity; plugin entities describe identity; bindings connect them; nothing else fuses data.
+## Cross-Module Identity
 
 ### The Problem
 
-Plugins are independent, and they should be. No plugin should be dependent on another plugin. They don't know about each other. But users need cross-plugin identity: the "Jane Doe" in my contacts should be the same "Jane Doe" in my schedule.
+Modules are independent, and they should be. No module should depend on another module. They don't know about each other. But users need cross-module identity: the "Jane Doe" in my contacts should be the same "Jane Doe" in my schedule.
 
 The tension:
 
-- If we force plugins to use standardized types (Person, Cue, Prop), we lock users into a rigid structure
-- If plugins define whatever they want, users have to wire everything manually
+- If we force modules to use standardized types (Person, Cue, Prop), we lock users into a rigid structure
+- If modules define whatever they want, users have to wire everything manually
 
-### The Solution: Three-Layer Model
+### The Solution: Suggested-Confirmed Field Mapping
 
-The system uses three distinct layers, each created independently:
+Modules declare shared key *suggestions* in their manifests (developer intent), but mappings do not auto-activate. On module adoption or first table-linking, the system presents suggested field mappings based on shared key overlap. The user reviews and confirms each mapping. Confirmed mappings then behave identically to classic shared key semantics.
 
-| Layer                  | What It Is                                                                  | Created When                                  |
-| ---------------------- | --------------------------------------------------------------------------- | --------------------------------------------- |
-| **Concept Definition** | A schema-level semantic type (e.g., "Person", "Cue")                        | User explicitly creates it                    |
-| **Binding**            | A declaration that a plugin facet is semantically compatible with a Concept | User configures plugin→Concept field mappings |
-| **Concept Entity**     | An instance representing a real-world identity                              | User explicitly asserts entity equivalence    |
+**How it works:**
 
-### How It Works
+1. Contacts module declares a `name` field. Scheduler module also declares a `name` field.
+2. On adoption or first link, the system says: "Contacts and Scheduler both have a `name` field. Should these be the same data?"
+3. User confirms or rejects each suggested mapping.
+4. Confirmed mappings share data going forward. Rejected mappings stay independent.
+5. Users can also create custom field mappings beyond what modules suggest.
 
-1. **User creates a Concept definition** — e.g., "Person" with fields `name`, `email`, `phone`
+**Templates** (e.g., a "Stage Management" starter workspace) can pre-confirm mappings for zero-friction onboarding.
 
-2. **User binds plugin facets to the Concept** — e.g., `contacts.person.name` → `Person.name` and `schedule.attendee.displayName` → `Person.name`. This declares semantic compatibility but does not create any entities or assert any identity.
+**Why this approach:** The system is welcome to suggest potential matches, but it should always be up to the user to say "these tables/types are the same thing." Auto-binding risks false collisions and violates the principle of explicit user control.
 
-3. **User asserts entity equivalence** — e.g., "contacts:person:jane and schedule:attendee:jd are the same real-world person." This creates a Concept entity atomically.
-
-4. **Conflicts are surfaced** — If Jane's contact says "Jane Doe" and the attendee says "J. Doe", a conflict is created on `Person.name`. The Concept entity exists, but canonical values require explicit resolution.
-
-5. **After resolution, values project** — Once resolved, all bound plugin fields project the canonical Concept value. Editing any bound field updates the Concept directly.
-
-### Key Semantics
-
-**Canonical data lives on Concept entities.** Plugin entities reference Concepts; they don't own shared identity.
-
-**Binding ≠ equivalence.** Binding a facet to a Concept declares compatibility. Creating a Concept entity requires explicit user assertion.
-
-**Single-entity binding is valid.** A Concept entity can have just one plugin entity bound. Concepts represent identity, not deduplication.
-
-**Unbinding is safe.** Unbinding removes semantic linkage only. Plugin entities retain their last concrete values. History is preserved.
-
-**Subset relationships emerge naturally.** Lighting cues ⊆ SM cues is expressed by which plugin entities are bound, not by Concept hierarchy.
-
-### Example: Person Concept
-
-```
-Concept Definition: Person
-├── Fields: name, email, phone
-
-Concept Entity: person:jane
-├── Canonical: name="Jane Doe", email="jane@example.com"
-├── Bound:
-│   ├── contacts:person:jane-001 (projects name, email)
-│   └── schedule:attendee:jd-42 (projects name)
-```
-
-When a user edits `schedule:attendee:jd-42.displayName` to "Jane Smith", the Concept's canonical `name` updates to "Jane Smith", and `contacts:person:jane-001.name` projects the new value.
-
-### Remaining Open Questions
-
-- Advanced schema UX for non-technical users
-- Concept definition versioning and migration
+**Table-linking compatibility** replaces kind-compatibility. The system warns on unlikely table combinations; the user decides. Dedup/matching rules are scoped to tables, not to a global type.
 
 ---
 
@@ -221,6 +215,10 @@ We use HLCs for deterministic ordering across peers. HLCs combine wall-clock tim
 - No reliance on synchronized clocks
 - Deterministic merge behavior
 
+### Operations and Bundles
+
+Mutations are field-level operations grouped into atomic bundles. A bundle is an all-or-nothing unit — every operation in the bundle succeeds together or fails together.
+
 ### Determinism Guarantee
 
 Given the same operations in the same order, any peer will arrive at the same state. This is critical for trust: users need to know that what they see is what everyone else sees (after sync).
@@ -229,17 +227,30 @@ Given the same operations in the same order, any peer will arrive at the same st
 
 ## Collaboration Model
 
-### Local / Offline Mode
+### Sync Modes (V1)
 
-Single user, no network. Everything works. This is the default state.
+V1 supports two sync modes, both using the same underlying oplog-based protocol:
 
-### LAN Collaboration
+| Mode | How it works | When to use |
+|------|-------------|-------------|
+| **LAN session** | Devices discover each other via mDNS and sync directly. No internet required. | On-site production networks, isolated subnets |
+| **Offline** | No sync. Changes accumulate locally. Merge on reconnect. | Default state — everything works without a network |
 
-Peers discover each other on the local network. The first to host becomes the **leader**. The leader sequences operations to ensure consistency.
+**Post-v1:** Cloud server sync (a central Rust server that clients sync to via WebSocket) and automated leader election are deferred to post-v1.
 
-Leadership is a transport role, not a permission escalation. The leader doesn't have special powers over the data.
+**Key constraint:** Users on isolated networks (lighting ETCNet, sound network) without WAN access must still be able to sync on their local subnet. Network topology cannot be assumed.
 
-If the leader disconnects, a new leader is elected. Everyone else keeps working.
+**What stays the same across all modes:**
+- Local-first: all data lives on device, always works offline
+- Oplog-based sync: "send me all ops I don't have"
+- HLC for deterministic ordering
+- Conflict detection and resolution model
+
+### LAN Sessions
+
+In LAN mode, peers discover each other on the local network via mDNS and sync directly. The first to host becomes the **leader**. The leader sequences operations to ensure consistency.
+
+Leadership is a transport role, not a permission escalation. The leader doesn't have special powers over the data. If the leader disconnects, a new leader is elected. Everyone else keeps working.
 
 ### Network Partitions
 
@@ -247,16 +258,7 @@ Teams can work independently and merge later.
 
 Example: The sound team works Saturday. The lighting team works Sunday. Monday, everyone reconnects. The system merges both timelines, surfacing conflicts where they edited the same things.
 
-This is intentional. We want to support "everyone goes home, works on their own, comes back and syncs" without explicitly requiring cloud infrastructure.
-
-### Session Lifecycle
-
-- **Host** — Start a collaborative session
-- **Join** — Connect to an existing session
-- **Leave** — Disconnect (your data stays local)
-- **End** — Close the session entirely
-
-No surprise syncs. Users control when merging happens.
+This is intentional. We want to support "everyone goes home, works on their own, comes back and syncs" without requiring cloud infrastructure.
 
 ---
 
@@ -264,7 +266,7 @@ No surprise syncs. Users control when merging happens.
 
 ### When Conflicts Occur
 
-A conflict happens when two peers edited the same semantic field while disconnected. "Semantic" means we respect bindings—if `contacts.person.name` and `schedule.attendee.name` are bound, editing either creates a potential conflict.
+A conflict happens when two peers edited the same field while disconnected. Fields with confirmed mappings across modules are the same field — if `contacts.name` and `scheduler.display_name` are mapped, editing either creates a potential conflict.
 
 ### How Conflicts Are Presented
 
@@ -274,29 +276,35 @@ N-way conflicts are described in domain language, not database terms:
 
 Users see what changed, who changed it, and what the options are.
 
-Conflicts are non-blocking by nature, but interface should encourage users to resolve them. To ensure replica parity, users could see LWW value by default until conflict is resolved.
-
 ### How Conflicts Are Resolved
 
 - User explicitly picks a resolution
 - The resolution is recorded as an operation (auditable)
 - Resolutions can be revisited and changed later
 - Nothing is ever silently lost
+- CRDTs handle text fields and ordered lists automatically (no user intervention needed)
 
-### Example
+---
 
-1. Alex (offline) changes Cue 42's start time to 10:30
-2. Jordan (offline) changes Cue 42's start time to 10:45
-3. They reconnect
-4. System shows: "Cue 42 start time: Alex set 10:30, Jordan set 10:45. Which is correct?"
-5. User picks Jordan's version
-6. Operation recorded: "Conflict resolved: Cue 42 start time = 10:45 (chose Jordan's edit over Alex's)"
+## Smart Fields
+
+### Smart Fields (UI Concept)
+
+Smart Fields are a UI concept, not core architecture. Every field in the system supports modes, switchable through a popover:
+
+- **Discrete** — Plain value (default)
+- **Reference** — Points to a field on another entity (edit-through)
+- **Query** — Dynamic expression producing a value or set (post-v1; requires expression language)
+
+For V1, Smart Fields support Discrete and Reference modes. The Query mode depends on the expression language, which is deferred to post-v1.
+
+The core must support field references for V1. "Smart Fields" as a unified concept lives in the UI/view layer. Module developers get Smart Field rendering for free from the core UI components.
 
 ---
 
 ## Staging Overlays
 
-Staging overlays are temporary, non-canonical layers of operations that enable safe experimentation and preview.
+Staging overlays are temporary, non-canonical layers of operations that enable safe experimentation and preview. Overlays answer: **"Show me what this will do before it becomes real."**
 
 ### Core Concept
 
@@ -312,249 +320,88 @@ Overlays behave like canonical state for all read operations, but nothing syncs 
 ### Key Semantics
 
 - **Isolation** — Overlay operations do not affect canonical history until committed
-- **Atomic commit** — Committing an overlay either fully succeeds or fully fails
+- **Atomic actions** — Commit all or discard all (no partial commits)
+- **Knockout** — Remove specific operations before commit to exclude them
 - **Safe discard** — Discarding an overlay affects no canonical state
-- **Query support** — Parameterized queries can reference overlay state as input
+- **Persistence** — Overlays persist across app restarts (no auto-expiry)
 
-### Example: Import Preview
-
-1. User initiates an import from an external file
-2. Import runs inside a staging overlay (the default)
-3. User sees exactly what will be created or modified
-4. User reviews, makes adjustments, then commits
-5. Commit produces explicit operations in canonical history
-6. If something looks wrong, discard the overlay—nothing happened
+Scripts, imports, and manual experimentation all use overlays as their staging mechanism.
 
 ---
 
-## Proposals & Suggestions
+## Scripts and Automation
 
-Proposals are non-authoritative suggested changes that are visible to collaborators but do not alter canonical state until explicitly accepted.
+Scripts are the automation layer for Openprod. They enable both module developers and end users to create powerful, flexible workflows that emit auditable operations.
 
-### When to Use Proposals
+**Philosophy:** Modules provide schema, UI, and scripts. Users create scripts to automate tasks, trigger behaviors, and build complex functionality without needing to create modules.
 
-- Collaborative review workflows (designer proposes → SM approves)
-- Safe cross-plugin suggestions
-- Bulk change review before commit
-- Non-destructive experimentation shared with team
+All scripts are written in **Lua 5.4**, chosen for maturity (30+ years), native async via coroutines, lightweight runtime (~300KB), cross-platform support (desktop, mobile, web via WASM), and approachable syntax.
 
-### Key Semantics
+Scripts execute in two modes for V1:
 
-- **No canonical mutation** — Proposals do not modify canonical state
-- **Independent from conflicts** — Proposals and conflicts are orthogonal; a field can have both
-- **Explicit acceptance** — Accepting a proposal emits canonical operations
-- **No bypass** — Proposal acceptance respects the same authorization and conflict rules as direct edits
+- **Manual** — User-triggered, runs in an overlay for preview before commit
+- **On-change** — Triggered by data changes, runs automatically based on user-configured triggers
 
-### Proposals and Overlays
+**Post-v1:** Background mode (long-running scripts for OSC listeners, file watchers, etc.) is deferred to post-v1.
 
-Proposals can be created from overlay state. When you create a proposal from an overlay:
-
-- The proposal references what canonical operations would result if accepted
-- Discarding the overlay does not discard proposals created from it
-- Proposals become independent once created
+All script output is subject to normal conflict detection.
 
 ---
 
-## Transform Bindings
-
-Transform Bindings are explicit, deterministic semantic rules that produce canonical state changes from other canonical state.
-
-**Key distinction:** Transform Bindings automate _how_ truth is kept consistent, not _what_ truth is. They are not formula fields or live calculations—they're explicit user-defined rules that emit auditable operations.
-
-### How They Work
-
-1. User creates a Transform Binding declaring source fields and target fields
-2. When source fields change, the binding executes automatically
-3. The binding emits normal canonical operations (auditable, attributable)
-4. If concurrent transform outputs differ, a conflict is created (just like manual edits)
-
-### Safety Guarantees
-
-- **Deterministic** — Given identical state, produces identical outputs
-- **No cycles** — Transform Bindings must not self-trigger
-- **No auto-resolution** — Transforms cannot automatically resolve conflicts
-- **Visible in history** — All transform outputs are traceable to their source
-
-### Example: Cue Numbering
-
-A transform binding could automatically renumber cues when their order changes:
-
-1. User reorders cues in a scene
-2. Transform binding detects the order change
-3. Binding emits operations to update cue numbers
-4. Changes appear in history as "Transform: Renumber cues in Scene 2"
-
-### What Transform Bindings Cannot Do
-
-- Infer user intent
-- Merge entities
-- Create Concept entities
-- Resolve conflicts automatically
-
----
-
-## Plugin System
+## Module System
 
 ### Philosophy
 
-- **Independent**: Every plugin must be useful on its own
-- **No hard dependencies**: Plugins never assume other plugins exist
-- **Opt-in interoperability**: Cross-plugin features emerge through Concepts and Bindings, not code coupling
+- **Independent**: Every module must be useful on its own
+- **No hard dependencies**: Modules never assume other modules exist
+- **Opt-in interoperability**: Cross-module features emerge through field mappings and user-defined rules, not code coupling
 
 ### Installation vs. Adoption
 
-| Action      | Scope     | Effect                                      |
-| ----------- | --------- | ------------------------------------------- |
-| **Install** | Per-user  | Plugin UI available locally                 |
-| **Adopt**   | Workspace | Plugin schema shared with all collaborators |
+| Action      | Scope     | Effect                                       |
+| ----------- | --------- | -------------------------------------------- |
+| **Install** | Per-user  | Module UI available locally                  |
+| **Adopt**   | Workspace | Module schema shared with all collaborators  |
 
-A lighting designer can install plugins the stage manager doesn't need. But if the lighting plugin's schema should be shared workspace-wide, it needs to be adopted.
+### Module Anatomy
 
-### Plugin Anatomy
+Modules can provide:
 
-Plugins can provide:
-
-- **Schema** (TOML) — Declares facet types, edge types, and optional Concept bindings
+- **Schema** (TOML) — Declares tables, field types, and field mapping suggestions
 - **Views** (TypeScript) — UI components for viewing and editing data
-- **Jobs** (Rust) — Compute-intensive tasks like PDF generation
+- **Scripts** (Lua) — Automation, imports, exports, and compute tasks
 
-### Capabilities
+### Configuration Hierarchy
 
-Plugins request host capabilities:
+Configuration cascades from module defaults to workspace overrides:
 
-- Filesystem access
-- Network access
-- MIDI/OSC output
-- etc.
-
-Capabilities are granted per-user and enforced by the core. A plugin can't access the filesystem unless you've allowed it.
-
-### Local-Only Plugins
-
-Some plugins produce data that should never sync—personal notes, scratch calculations, private workflows. Local-only plugins:
-
-- Are excluded from canonical sync entirely
-- May reference canonical entities (read-only)
-- Must not emit canonical operations
-- Follow the same operation/bundle model locally
-- Function fully offline
-
-Use cases:
-
-- Personal notes and annotations
-- Scratch data and working calculations
-- User-specific display preferences
-- Private experiments before sharing
+```
+Module defaults
+    | (overridden by)
+Workspace config
+    | (overridden by)
+Per-entity overrides (rare)
+```
 
 ---
 
-## Jobs
+## V1 Foundation Primitives
 
-Jobs handle compute-intensive tasks: generating PDFs, bulk transformations, complex calculations.
+These 13 primitives form the complete v1 architecture. Everything else is built on top or deferred:
 
-### Safety Model
-
-1. **Jobs are planners, not executors** — A job reads data and produces a bundle of operations. It never writes directly.
-2. **Preview before apply** — Users see what a job will do before it happens.
-3. **Deterministic** — Same inputs, same outputs. Job results are replayable.
-
-This means jobs are safe to experiment with. You can run a job, see what it would do, and cancel if it's wrong.
-
----
-
-## Query & View System
-
-### Structured Queries
-
-Queries are declarative and binding-aware. If you query for "all people," the system knows to include both `contacts.person` and `schedule.attendee` entities (if they're bound via a Concept).
-
-### Parameterized Queries
-
-Queries can accept parameters that reference canonical state or overlay state:
-
-- "All people in these scenes" (parameter: scene list)
-- "All cues related to this event" (parameter: event reference)
-- Given the same state and parameters, results are always deterministic
-
-Parameterized queries are read-only—they never emit operations.
-
-### Derived Entity Sets
-
-Query results that return entities are called derived entity sets. Key constraints:
-
-- Derived entities are read-only—they cannot be directly mutated
-- Canonical state must not contain back-references to derived sets
-- Materializing derived entities into canonical entities requires explicit user action
-- Derived sets have no persistent identity; they exist only as query results
-
-### Derived Views
-
-Read-only views computed from the graph. Used for:
-
-- Reports and paperwork
-- Dashboards
-- Cross-plugin summaries
-
-Derived views are never stored—they're always computed fresh from source data.
-
-### Query Determinism
-
-Queries are evaluated against consistent snapshots of state:
-
-- Overlay queries reflect overlay state layered atop canonical state
-- Queries must not observe partially applied canonical operations
-- Sync application is atomic from the perspective of query evaluation
-
----
-
-## Practical Examples
-
-These are the workflows I want to enable:
-
-### Stage Manager: Rehearsal Scheduling
-
-Today: SM manually calculates call times for 50 people by checking which scenes they're in, when those scenes rehearse, and adding buffer time. Takes hours.
-
-With Openprod:
-
-1. Import script, mark scene boundaries
-2. Import contacts, assign people to scenes
-3. Create schedule, drop in events like "Fight Call" with attendees = "people in Scene 2 where fight occurs"
-4. System automatically derives each person's call time, break windows, and departure time
-5. Changes to the schedule automatically update all derived times
-
-### Stage Manager: Prompt Book Cue Integration
-
-Today: SM manually copies cues from each department into their prompt book. When something changes, they update by hand. Errors happen.
-
-With Openprod:
-
-1. Each department enters their cues in their own plugin
-2. SM's prompt book view queries all cues, displays them on the relevant script pages
-3. When lighting updates Cue 42, the prompt book updates automatically
-4. Standby calls are derived: "get all cues on this page and the next N pages"
-
-### Lighting Designer: Patch and Focus
-
-Today: LD exports CSV from Vectorworks, manually enters DMX addresses, patches console by hand.
-
-With Openprod:
-
-1. Import fixture data from Vectorworks/Lightwright
-2. System calculates DMX universes and addresses based on position, type, rules
-3. Send patch to console via OSC
-4. Query console: "what lights aren't used in Cue 101?" "What color are my down pools in Scene 3?"
-
-### Cross-Department: Notes
-
-Today: Each department takes notes in their own format, exports PDFs, emails them out. Everyone has to open multiple files to see if anything affects them.
-
-With Openprod:
-
-1. Anyone can attach notes to any entity
-2. Notes can have images, URLs, threads, status (open/resolved/on hold)
-3. Personalized views: "show me notes tagged with my department"
-4. Personalized emails: "Your notes for today: [relevant subset]"
+1. **Entity/facet model** — Internal architecture. Entities with facets, field namespacing.
+2. **Tables + field mappings** — User-facing data model. Modules declare tables, users link and map fields.
+3. **Oplog + HLC** — Append-only operation log with hybrid logical clocks. Source of truth.
+4. **Operations and bundles** — Field-level mutations grouped into atomic bundles.
+5. **Conflict detection and resolution** — Scalar conflicts surfaced for user resolution. CRDTs for text and ordered lists.
+6. **Overlays** — Staging areas for preview before commit. Used by scripts, imports, and manual experimentation.
+7. **Lua scripting** — Business logic, automations, external I/O. Manual and on-change modes. (Background mode is post-v1.)
+8. **Rules engine** — Query-to-action automation scoped to tables. Record matching, table membership, and computed values.
+9. **Module system** — Modules as packages: table schema (TOML) + views (TypeScript) + scripts (Lua).
+10. **Sync** — LAN discovery + offline. Oplog-based, CRDT-enhanced. (Cloud sync is post-v1.)
+11. **Edges/relationships** — First-class directed relationships with properties. Ordered edges for lists.
+12. **Blobs/assets** — Content-addressed immutable file storage (BLAKE3 hashing) for PDFs, images, CSVs.
+13. **Actor identity** — Ed25519 keypair identity for oplog attribution, operation signing, and conflict context.
 
 ---
 
@@ -562,60 +409,60 @@ With Openprod:
 
 Things we will **not** do:
 
-| We won't do this                        | Why                                                                         |
-| --------------------------------------- | --------------------------------------------------------------------------- |
-| Background auto-mutations               | Implicit behavior erodes trust                                              |
-| Formula fields / live calculation rules | Transformations must be explicit, auditable operations (see below)          |
-| Hidden coupling between plugins         | All interoperability must be visible and explainable                        |
-| Require a central server                | Peer-to-peer by default; cloud is optional                                  |
-| Replace every production tool           | We're a collaboration substrate, not an opinionated app                     |
-| Silently merge conflicting edits        | Users must see and resolve conflicts explicitly                             |
-| Auto-resolve conflicts                  | All resolutions require explicit user action                                |
+| We won't do this                        | Why                                                                |
+| --------------------------------------- | ------------------------------------------------------------------ |
+| Hidden implicit computation             | All computed values are user-configured, visible, and auditable. The system does not compute values unless the user has explicitly set up an expression, reference, or rule. There are no hidden formulas or implicit calculations. |
+| Hidden automated mutations              | All automated mutations are user-configured, visible, and auditable. Every automated action can be traced to a rule or trigger that the user explicitly created or approved. No automation runs without user consent. |
+| Hidden coupling between modules         | All interoperability must be visible and explainable               |
+| Require a central server                | Local-first by default; cloud is optional                          |
+| Replace every production tool           | We're a collaboration substrate, not an opinionated app            |
+| Silently merge conflicting edits        | Users must see and resolve conflicts explicitly                    |
+| Auto-resolve scalar conflicts           | All scalar resolutions require explicit user action (CRDTs handle text and lists) |
 
-**Note on Transform Bindings:** Transform Bindings are our answer to "how do I automate derived data?" They differ from formula fields in critical ways:
+The distinction in the first two rows is **explicit vs. implicit**, not "no computation" or "no automation." Expressions, Smart Fields, rules, and on-change scripts all compute and mutate data — but only because the user set them up, and the user can always see what's happening.
 
-- They emit explicit, auditable operations (not live calculations)
-- They're subject to normal conflict detection
-- They cannot auto-resolve conflicts or infer user intent
-- They're visible in history and traceable to their source
+---
 
-Transform Bindings automate _how_ truth is kept consistent, not _what_ truth is.
+## Future Considerations
+
+These features are architecturally compatible but deferred to post-v1:
+
+- **Expression language** — Lightweight formula language for field-level data transforms and queries. Enables Smart Field query mode and computed values. Deferred until the core is stable.
+- **Cloud sync** — A central Rust server (self-hosted or provider-hosted) that clients sync to via WebSocket. V1 supports LAN and offline sync only.
+- **Background scripts** — Long-running Lua scripts (OSC listeners, file watchers) using coroutines with Rust's tokio runtime. V1 supports manual and on-change script modes only.
+- **Permissions & roles** — Role-based access control (Viewer/Editor/Admin). V1 has no role enforcement; everyone can edit. Permissions are deferred to post-v1.
+- **Proposals** — Non-authoritative suggested changes visible to collaborators. Can be layered on top of overlays later.
+- **Approval workflows** — Multi-party approval with quorum, expiration, delegation. Enterprise-level complexity that theatrical productions rarely need in software.
+- **Schema evolution** — Formal migration system with semantic versioning. For v1, schema changes are handled manually. The oplog records module versions on operations, so the data for future migration support exists.
+- **Snapshots & garbage collection** — Oplog segmentation, hash chains, and GC are performance optimizations. Not needed until the oplog grows large enough to matter.
+- **Wire format optimization** — Use a simple serialization format (MessagePack or JSON) for v1. Optimize later if performance requires it.
+
+Specs for these features exist in the archive for future reference.
 
 ---
 
 ## Technology Choices
 
-| Component     | Technology      | Rationale                                       |
-| ------------- | --------------- | ----------------------------------------------- |
-| Core          | Rust            | Performance, safety, single-binary distribution |
-| Storage       | SQLite (WAL)    | Battle-tested, embeddable, excellent tooling    |
-| Plugin UI     | TypeScript      | Familiar to web developers, good ecosystem      |
-| Plugin Schema | TOML            | Human-readable, simple for non-programmers      |
-| Sync Protocol | Custom over TCP | LAN-optimized, no cloud dependency              |
+| Component      | Technology        | Rationale                                        |
+| -------------- | ----------------- | ------------------------------------------------ |
+| Core engine    | Rust              | Performance, safety, single-binary distribution  |
+| Storage        | SQLite (WAL mode) | Battle-tested, embeddable, excellent tooling     |
+| Frontend       | Electron + TypeScript | Desktop app, module views                    |
+| Scripting      | Lua 5.4 (mlua)   | Business logic, automations                      |
+| Module schemas | TOML              | Human-readable table/field declarations          |
+| Module views   | TypeScript        | UI components registered with view system        |
+| Sync transport | WebSocket         | LAN (cloud server post-v1)                       |
+| LAN discovery  | mDNS              | Zero-config local network peer finding           |
+| CRDTs          | Yrs (recommended) | Text fields, ordered lists                       |
 
 ---
 
 ## Open Questions
 
-These are areas where I need input:
+These areas still need input:
 
-1. ~~**Concepts and Bindings**~~ — **RESOLVED.** The three-layer model (Concept definitions, Bindings, Concept entities) is finalized. See INVARIANTS.md for complete semantics.
-
-2. ~~**Where does canonical data live?**~~ — **RESOLVED.** Concept entities own canonical values. Plugin entities project those values via bindings. Identity flows upward; data stays local.
-
-3. ~~**How do we handle derived/calculated data?**~~ — **RESOLVED.** Transform Bindings provide explicit, deterministic, auditable automation. They emit normal operations and are subject to conflict detection. See INVARIANTS.md for complete semantics.
-
-4. **Peer-to-peer replication** — What's the industry standard here? I've designed around leader election and HLC, but I don't know if there are better approaches.
-
-5. **Plugin sandboxing** — How strict should isolation be? WASM? Process isolation? What's the right tradeoff between safety and capability?
-
-6. **Schema evolution** — How do plugins handle breaking changes to their facet definitions? How do Concept definitions evolve? How do Transform Bindings migrate?
-
-7. **Peer discovery** — How do peers find each other on LAN? mDNS? Something else?
-
-8. **Overlay persistence** — Should staging overlays persist across sessions? How do we handle overlays when canonical state changes underneath them?
-
-9. **Proposal workflows** — How do proposals expire? What notification/subscription model makes sense? Can proposals have dependencies (accept A requires accepting B)?
+1. **Cloud server protocol** — Exact relay and persistence protocol for the cloud sync target (post-v1).
+2. **Expression language design** — What syntax and capabilities should the expression language support? (Post-v1, but design work can begin early.)
 
 ---
 
@@ -623,40 +470,33 @@ These are areas where I need input:
 
 **Where we are:** Design phase with a rough prototype. The prototype proves the core ideas work, but it's not anywhere near production-ready.
 
-**What exists:** A working-ish implementation of HLC/sync/plugin loading, relationships, queries. It's messy and needs rewriting, but it demonstrates feasibility.
+**What exists:** A working-ish implementation of HLC/sync/module loading, relationships, queries. It's messy and needs rewriting, but it demonstrates feasibility.
 
-**What's needed:** Help finalizing the architecture, especially around the Concept/Binding system and peer-to-peer replication. Then: a clean implementation of the core.
+**What's needed:** Help finalizing the architecture, especially around LAN sync and the rules engine. Then: a clean implementation of the core.
 
 ---
 
 ## Glossary
 
-| Term                  | Definition                                                                                               |
-| --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Entity                | A thing with a stable ID (person, cue, prop, etc.)                                                       |
-| Facet                 | A set of fields attached to an entity by a plugin                                                        |
-| Edge                  | A relationship between two entities                                                                      |
-| Concept Definition    | A schema-level semantic type (e.g., "Person", "Cue") created by user action                              |
-| Concept Entity        | An instance-level object representing real-world identity, created by explicit equivalence assertion     |
-| Binding               | A declaration that a plugin facet is semantically compatible with a Concept definition                   |
-| Transform Binding     | An explicit, deterministic rule that produces canonical operations when source fields change             |
-| Equivalence Assertion | An explicit user action stating that entities across multiple plugins refer to the same real-world thing |
-| Canonical Value       | The authoritative value for a Concept field, established through conflict resolution                     |
-| Projection            | The semantic enforcement of canonical Concept values to bound plugin fields                              |
-| Local Override        | A controlled, auditable divergence from a canonical value that does not participate in conflicts         |
-| Unbinding             | Removing semantic linkage between a plugin entity and a Concept entity                                   |
-| Staging Overlay       | A temporary, non-canonical layer of operations for safe experimentation and preview                      |
-| Proposal              | A non-authoritative suggested change visible to collaborators, not applied until explicitly accepted     |
-| Oplog                 | Append-only log of all operations; the source of truth                                                   |
-| HLC                   | Hybrid Logical Clock; provides deterministic ordering across peers                                       |
-| Redirect              | A pointer from a merged entity to its canonical version                                                  |
-| Adoption              | Making a plugin's schema available workspace-wide                                                        |
-| Capability            | A host feature (filesystem, network, etc.) that plugins can request                                      |
-| Local-Only Plugin     | A plugin whose data exists only for one user and never syncs to canonical state                          |
-| Job                   | A compute task that produces operations without direct mutation                                          |
-| Derived View          | A read-only view computed from graph queries                                                             |
-| Derived Entity Set    | A read-only query result returning entities; cannot be mutated directly or referenced by canonical state |
-| Parameterized Query   | A query that accepts parameters referencing canonical or overlay state                                   |
+| Term                | Definition                                                                 |
+| ------------------- | -------------------------------------------------------------------------- |
+| Entity              | A thing with a stable ID; just an identifier (internal concept)            |
+| Facet               | A module-defined grouping of fields; maps to table membership (internal concept) |
+| Table               | A user-facing named collection of records with a schema                    |
+| Record              | A single entry in a table (corresponds to an entity with a facet)          |
+| Field               | Key-value data on an entity; either shared key or namespaced key           |
+| Shared Key          | A field key accessible by multiple modules (e.g., `name`, `email`)         |
+| Namespaced Key      | A module-private field key (e.g., `contacts.status`)                       |
+| Field Mapping       | A confirmed link between fields across tables/modules — same data          |
+| Edge                | A relationship between two entities                                        |
+| Rule                | A query-to-action automation, scoped to a table                            |
+| Expression          | A formula that computes a field value from other data                       |
+| Smart Field         | UI concept: a field that can be discrete, reference, or query mode         |
+| Staging Overlay     | A temporary, non-canonical layer of operations                             |
+| Oplog               | Append-only log of all operations; the source of truth                     |
+| HLC                 | Hybrid Logical Clock; provides deterministic ordering across peers         |
+| Bundle              | An atomic group of operations that commit together                         |
+| Module              | A package providing table schema, views, and/or scripts                    |
 
 ---
 
@@ -672,24 +512,54 @@ These are areas where I need input:
 6. Stage manager resolves each conflict
 7. All peers now have identical state
 
-### Scenario B: User asserts entity equivalence
+### Scenario B: User links records across modules
 
-1. Contacts plugin has `contacts:person:john` with name "John Smith"
-2. Schedule plugin has `schedule:attendee:js` with displayName "J. Smith"
-3. User recognizes these refer to the same real-world person
-4. User asserts equivalence — a Person Concept entity is created atomically
-5. Conflict detected: `Person.name` has "John Smith" vs "J. Smith"
-6. User resolves conflict, choosing "John Smith" as canonical
-7. Both plugin fields now project "John Smith"
-8. Editing either field updates the Concept's canonical value
+1. Contacts module has a Contact with `name: "John Smith"`
+2. Schedule module has an Attendee with `name: "J. Smith"`
+3. On first table-linking, system suggests: "Contacts and Schedule both have a `name` field. Should these be the same data?"
+4. User confirms the field mapping
+5. User recognizes these two records are the same person but names don't match exactly
+6. User manually merges — one entity now has both Contact and Attendee facets
+7. Conflict on `name` field: "John Smith" vs "J. Smith"
+8. User resolves, choosing "John Smith"
+9. Both modules now see "John Smith"
 
-### Scenario C: Conflict resolution flow
+### Scenario C: Import with overlay preview
 
-1. Alex changes Cue 42 timing to 10:30 (offline)
-2. Jordan changes Cue 42 timing to 10:45 (offline)
-3. Both reconnect
-4. System detects conflict on Cue 42's timing field
-5. UI shows: "Cue 42 timing edited by Alex (10:30) and Jordan (10:45)"
-6. User picks Jordan's version
-7. Resolution recorded as operation: chose 10:45
-8. Later, user can view conflict history and change resolution if needed
+1. Stage manager imports a CSV of 50 cast members
+2. Import runs in a staging overlay (default behavior)
+3. UI shows: "This will create 47 new Contacts. 3 match existing records."
+4. SM reviews, spots "John Smithh" typo, fixes it directly in overlay
+5. SM clicks "Commit" — all 50 operations apply atomically
+6. If SM had spotted a bigger problem, they could discard the entire import
+
+### Scenario D: Per-entity table membership (the cue scenario)
+
+1. Lighting designer creates cues LX 1 through LX 20 in the Lighting Cues table
+2. A rule is configured: "Cues in Lighting table where `is_called==true` also appear in SM Cues table"
+3. LX 11 is marked `is_called: true` — it automatically appears in the SM Cues table
+4. LX 11.1 (auto-follow) stays in Lighting Cues only — stage manager doesn't need to see it
+5. Sound designer creates SND 5, marks it as called — it appears in both Sound Cues and SM Cues
+6. Stage manager now has a unified cue list of all called cues across departments
+
+### Scenario E: Script overlay with canonical drift
+
+1. User is in staging mode, editing cue timings
+2. User runs "Generate rehearsal schedule" script
+3. Script completes — notification: "Schedule generator finished — 15 events staged"
+4. User clicks "Stash current and view" to review script output
+5. While reviewing, a peer syncs — one event's room changed
+6. Badge appears: "Room changed to 'Studio B' while you were reviewing"
+7. User clicks "Use Canonical" to accept the peer's change
+8. User commits the remaining 14 events
+9. User recalls their stashed overlay to continue editing cue timings
+
+---
+
+## Related Documents
+
+| Document | Purpose | Audience |
+|----------|---------|----------|
+| [FUNCTIONALITY.md](FUNCTIONALITY.md) | *What* users experience, how features work | End users |
+| [INVARIANTS.md](INVARIANTS.md) | Constraints that must always hold | Implementers |
+| [spec/](spec/README.md) | *How* to build each subsystem | Implementers |

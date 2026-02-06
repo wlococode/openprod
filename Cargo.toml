@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/storage",
+    "crates/harness",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/user/openprod"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+
+# IDs and crypto
+uuid = { version = "1", features = ["v7", "serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled", "blob"] }
+
+# Error handling
+thiserror = "2"
+
+# Hashing
+blake3 = "1"
+
+# Testing
+tempfile = "3"
+
+# Internal crates
+openprod-core = { path = "crates/core" }
+openprod-storage = { path = "crates/storage" }
+openprod-harness = { path = "crates/harness" }

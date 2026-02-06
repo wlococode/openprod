@@ -1,0 +1,5 @@
+.ignore
+source.md
+.claude
+*.env
+target/
