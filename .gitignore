@@ -3,3 +3,4 @@ source.md
 .claude
 *.env
 target/
+CLAUDE.md
